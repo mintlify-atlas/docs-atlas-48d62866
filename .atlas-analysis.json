@@ -1,0 +1,103 @@
+{
+  "projectType": "framework",
+  "projectName": "Boiler-Go",
+  "projectDescription": "A production-ready Go backend boilerplate with clean architecture, PostgreSQL, Redis, and background job processing",
+  "theme": "aspen",
+  "primaryColor": "#00ADD8",
+  "lightColor": "#5DC9E2",
+  "darkColor": "#007D9C",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/database-pool",
+              "concepts/background-jobs",
+              "concepts/logging",
+              "concepts/configuration",
+              "concepts/graceful-shutdown"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "development/setup",
+              "development/running-services",
+              "development/database-migrations",
+              "development/testing"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/environment-variables",
+              "deployment/production-checklist"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/health",
+              "api/worker-status",
+              "api/worker-ping"
+            ]
+          },
+          {
+            "group": "Packages",
+            "pages": [
+              "packages/config",
+              "packages/db",
+              "packages/logger",
+              "packages/scheduler",
+              "packages/handler",
+              "packages/middleware",
+              "packages/queue",
+              "packages/tasks"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Thread-safe database connection pooling with PostgreSQL",
+    "Redis-based background job processing with Asynq",
+    "Structured JSON logging with request correlation",
+    "Graceful shutdown with timeout handling",
+    "Environment-based configuration with validation",
+    "Health check endpoints for monitoring",
+    "CORS support and security hardening",
+    "Database migrations with golang-migrate"
+  ],
+  "publicApiSurface": [
+    "GET /health",
+    "GET /worker/status",
+    "POST /worker/ping",
+    "config.Load()",
+    "db.Open()",
+    "db.Get()",
+    "db.Close()",
+    "logger.New()",
+    "logger.Global()",
+    "scheduler.NewClient()",
+    "scheduler.Client.Enqueue()",
+    "scheduler.Client.EnqueueWithID()"
+  ]
+}
