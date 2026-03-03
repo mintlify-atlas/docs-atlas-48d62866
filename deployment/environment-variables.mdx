@@ -1,0 +1,422 @@
+---
+title: Environment variables
+description: Complete reference for all Boiler-Go configuration options
+---
+
+## Overview
+
+Boiler-Go uses environment variables for all configuration. Copy `.env.example` to `.env` and customize values for your environment.
+
+```bash
+cp .env.example .env
+```
+
+<Note>
+  All configuration is validated at startup. The application will fail fast if any required variables are missing or invalid.
+</Note>
+
+## Quick reference
+
+```bash
+# ---------- server ----------
+APP_PORT=8080
+
+# ---------- database ----------
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/appdb?sslmode=disable
+
+# ---------- redis / asynq ----------
+REDIS_ADDR=localhost:6379
+REDIS_PASSWORD=
+REDIS_DB=0
+
+# ---------- timeouts ----------
+HEALTH_CHECK_TIMEOUT=2s
+API_SHUTDOWN_TIMEOUT=10s
+WORKER_SHUTDOWN_TIMEOUT=30s
+
+# ---------- logging ----------
+LOG_OUTPUT=stdout
+LOG_FILE=
+```
+
+## Server configuration
+
+### APP_PORT
+
+HTTP server port for the API service.
+
+<ParamField path="APP_PORT" type="string" default="8080">
+  - **Validation**: Must be between 1 and 65535
+  - **Example**: `8080`, `3000`, `8000`
+  - **Production**: Use standard ports (80, 443) behind a reverse proxy
+</ParamField>
+
+```bash
+APP_PORT=8080
+```
+
+The API server configures additional HTTP timeouts in code:
+
+```go
+server := &http.Server{
+    Addr:           ":" + cfg.AppPort,
+    Handler:        router,
+    ReadTimeout:    10 * time.Second,
+    WriteTimeout:   10 * time.Second,
+    IdleTimeout:    60 * time.Second,
+    MaxHeaderBytes: 1 << 20, // 1MB
+}
+```
+
+See `cmd/api/main.go:90-97` for the full configuration.
+
+## Database configuration
+
+### DATABASE_URL
+
+PostgreSQL connection string with full connection parameters.
+
+<ParamField path="DATABASE_URL" type="string" required>
+  - **Format**: `postgres://user:password@host:port/dbname?sslmode=mode`
+  - **Validation**:
+    - Scheme must be `postgres` or `postgresql`
+    - Must include host
+    - Must include database name
+  - **SSL Modes**: `disable`, `require`, `verify-ca`, `verify-full`
+</ParamField>
+
+```bash
+# Development
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/appdb?sslmode=disable
+
+# Production
+DATABASE_URL=postgres://user:pass@db.example.com:5432/appdb?sslmode=require
+```
+
+<Warning>
+  Always use `sslmode=require` or higher in production to encrypt database connections.
+</Warning>
+
+#### Connection pool settings
+
+The database pool is configured with sensible defaults in `internal/db/pool.go:32-36`:
+
+```go
+poolConfig.MaxConns = 15              // Maximum connections
+poolConfig.MinConns = 2               // Minimum idle connections
+poolConfig.MaxConnLifetime = 30 * time.Minute
+poolConfig.MaxConnIdleTime = 5 * time.Minute
+poolConfig.HealthCheckPeriod = 1 * time.Minute
+```
+
+These values are optimized for most workloads. Adjust in code if needed for high-traffic scenarios.
+
+## Redis configuration
+
+### REDIS_ADDR
+
+Redis server address and port.
+
+<ParamField path="REDIS_ADDR" type="string" required>
+  - **Format**: `host:port`
+  - **Example**: `localhost:6379`, `redis.example.com:6379`
+  - **Used for**: Caching, session storage, background job queue (Asynq)
+</ParamField>
+
+```bash
+REDIS_ADDR=localhost:6379
+```
+
+### REDIS_PASSWORD
+
+Redis authentication password.
+
+<ParamField path="REDIS_PASSWORD" type="string">
+  - **Default**: Empty (no authentication)
+  - **Production**: Always use strong passwords
+  - **Security**: Store in secrets manager, not version control
+</ParamField>
+
+```bash
+# Development (no password)
+REDIS_PASSWORD=
+
+# Production
+REDIS_PASSWORD=your_secure_password_here
+```
+
+### REDIS_DB
+
+Redis database index.
+
+<ParamField path="REDIS_DB" type="integer" default="0">
+  - **Range**: 0-15 (default Redis configuration)
+  - **Validation**: Must be between 0 and 15
+  - **Use case**: Separate logical databases on the same Redis instance
+</ParamField>
+
+```bash
+REDIS_DB=0
+```
+
+<Note>
+  Redis supports 16 logical databases (0-15) by default. Use different indexes to isolate data between environments on the same server.
+</Note>
+
+## Timeout configuration
+
+All timeout values accept Go duration strings.
+
+<Warning>
+  All timeouts must be positive values. The application will fail to start if any timeout is zero or negative.
+</Warning>
+
+### HEALTH_CHECK_TIMEOUT
+
+Maximum duration for health check requests.
+
+<ParamField path="HEALTH_CHECK_TIMEOUT" type="duration" default="2s">
+  - **Format**: `1s`, `500ms`, `2s`, `5s`
+  - **Recommendation**: Keep low for fast health check responses
+  - **Used by**: `/health` endpoint
+</ParamField>
+
+```bash
+HEALTH_CHECK_TIMEOUT=2s
+```
+
+### API_SHUTDOWN_TIMEOUT
+
+Graceful shutdown timeout for the API server.
+
+<ParamField path="API_SHUTDOWN_TIMEOUT" type="duration" default="10s">
+  - **Format**: `10s`, `30s`, `1m`
+  - **Behavior**: Wait for in-flight requests to complete before forcing shutdown
+  - **Recommendation**: Long enough for typical request duration
+</ParamField>
+
+```bash
+API_SHUTDOWN_TIMEOUT=10s
+```
+
+Implementation in `cmd/api/main.go:124-125`:
+
+```go
+shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.APIShutdownTimeout)
+defer cancel()
+```
+
+### WORKER_SHUTDOWN_TIMEOUT
+
+Graceful shutdown timeout for the background worker.
+
+<ParamField path="WORKER_SHUTDOWN_TIMEOUT" type="duration" default="30s">
+  - **Format**: `30s`, `1m`, `5m`
+  - **Behavior**: Wait for in-flight tasks to complete before forcing shutdown
+  - **Recommendation**: Longer than API timeout to allow task completion
+</ParamField>
+
+```bash
+WORKER_SHUTDOWN_TIMEOUT=30s
+```
+
+Implementation in `cmd/worker/main.go:161-176`:
+
+```go
+srv.Stop()  // Stop accepting new tasks
+
+shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.WorkerShutdownTimeout)
+defer cancel()
+
+done := make(chan struct{})
+go func() {
+    srv.Shutdown()
+    close(done)
+}()
+
+select {
+case <-done:
+    logg.Info().Msg("worker shutdown completed gracefully")
+case <-shutdownCtx.Done():
+    logg.Warn().Msg("worker shutdown timed out, forcing exit")
+}
+```
+
+## Logging configuration
+
+### LOG_OUTPUT
+
+Log output destination.
+
+<ParamField path="LOG_OUTPUT" type="string" default="stdout">
+  - **Options**: `stdout`, `file`, `both`
+  - **Validation**: Must be one of the three allowed values
+  - **Production**: Use `stdout` for container environments, `file` for traditional deployments
+</ParamField>
+
+```bash
+# Log to console only (default)
+LOG_OUTPUT=stdout
+
+# Log to file only
+LOG_OUTPUT=file
+
+# Log to both console and file
+LOG_OUTPUT=both
+```
+
+<CardGroup cols={3}>
+  <Card title="stdout" icon="terminal">
+    Logs to standard output.
+    
+    **Best for**:
+    - Docker containers
+    - Kubernetes
+    - Cloud platforms
+    - Development
+  </Card>
+
+  <Card title="file" icon="file">
+    Logs to a file on disk.
+    
+    **Best for**:
+    - Traditional servers
+    - Local file rotation
+    - Offline analysis
+  </Card>
+
+  <Card title="both" icon="clone">
+    Logs to both destinations.
+    
+    **Best for**:
+    - Hybrid environments
+    - Debugging
+    - Backup logging
+  </Card>
+</CardGroup>
+
+### LOG_FILE
+
+Log file path when `LOG_OUTPUT` is `file` or `both`.
+
+<ParamField path="LOG_FILE" type="string">
+  - **Default**:
+    - API: `logs/api.log`
+    - Worker: `logs/worker.log`
+  - **Format**: Relative or absolute path
+  - **Requirements**: Parent directory must exist or be writable
+</ParamField>
+
+```bash
+# Use default paths (logs/api.log or logs/worker.log)
+LOG_FILE=
+
+# Custom relative path
+LOG_FILE=logs/my-api.log
+
+# Absolute path
+LOG_FILE=/var/log/boiler-go/api.log
+```
+
+<Note>
+  Leave `LOG_FILE` empty to use default paths. Each service (API/worker) automatically uses its own default file.
+</Note>
+
+Implementation in `cmd/api/main.go:35-38` and `cmd/worker/main.go:35-38`:
+
+```go
+if outputCfg.FilePath == "" {
+    outputCfg.FilePath = defaultFile  // "logs/api.log" or "logs/worker.log"
+}
+```
+
+## Validation rules
+
+All configuration is validated at startup by `internal/config/config.go:60-92`. The application will exit with a descriptive error if validation fails.
+
+### Required fields
+
+<Warning>
+  These variables must be set or the application will not start:
+  - `DATABASE_URL`
+  - `REDIS_ADDR`
+</Warning>
+
+### Validation checks
+
+- **APP_PORT**: Must be a valid number between 1-65535
+- **DATABASE_URL**: Must be valid PostgreSQL URL with scheme, host, and database name
+- **REDIS_DB**: Must be between 0 and 15
+- **Timeouts**: Must be positive duration values
+- **LOG_OUTPUT**: Must be `stdout`, `file`, or `both`
+
+From `internal/config/config.go:76-77`:
+
+```go
+if err := validatePort(c.AppPort); err != nil {
+    logg.Fatal().Err(err).Msg("invalid APP_PORT")
+}
+```
+
+## Environment-specific examples
+
+### Development
+
+```bash
+APP_PORT=8080
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/appdb?sslmode=disable
+REDIS_ADDR=localhost:6379
+REDIS_PASSWORD=
+REDIS_DB=0
+HEALTH_CHECK_TIMEOUT=2s
+API_SHUTDOWN_TIMEOUT=10s
+WORKER_SHUTDOWN_TIMEOUT=30s
+LOG_OUTPUT=stdout
+LOG_FILE=
+```
+
+### Production
+
+```bash
+APP_PORT=8080
+DATABASE_URL=postgres://produser:secure_pass@db.prod.com:5432/proddb?sslmode=require
+REDIS_ADDR=redis.prod.com:6379
+REDIS_PASSWORD=redis_secure_pass
+REDIS_DB=0
+HEALTH_CHECK_TIMEOUT=5s
+API_SHUTDOWN_TIMEOUT=30s
+WORKER_SHUTDOWN_TIMEOUT=60s
+LOG_OUTPUT=stdout
+LOG_FILE=
+```
+
+### Docker Compose
+
+```bash
+APP_PORT=8080
+DATABASE_URL=postgres://postgres:postgres@postgres:5432/appdb?sslmode=disable
+REDIS_ADDR=redis:6379
+REDIS_PASSWORD=
+REDIS_DB=0
+HEALTH_CHECK_TIMEOUT=2s
+API_SHUTDOWN_TIMEOUT=10s
+WORKER_SHUTDOWN_TIMEOUT=30s
+LOG_OUTPUT=stdout
+LOG_FILE=
+```
+
+<Note>
+  In Docker Compose, use service names (postgres, redis) instead of localhost for inter-container communication.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Docker deployment" href="/deployment/docker" icon="docker">
+    Deploy with Docker and Docker Compose
+  </Card>
+
+  <Card title="Production checklist" href="/deployment/production-checklist" icon="list-check">
+    Ensure production readiness
+  </Card>
+</CardGroup>

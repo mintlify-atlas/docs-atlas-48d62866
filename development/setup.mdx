@@ -1,0 +1,130 @@
+---
+title: Development setup
+description: Set up your local development environment for Boiler-Go
+---
+
+## Prerequisites
+
+Before setting up Boiler-Go, ensure you have the following installed:
+
+- Go 1.21 or higher
+- Docker and Docker Compose
+- [golang-migrate](https://github.com/golang-migrate/migrate) CLI tool
+- [sqlc](https://sqlc.dev/) for generating type-safe Go code from SQL
+
+## Clone the repository
+
+First, clone the Boiler-Go repository:
+
+```bash
+git clone https://github.com/yourusername/boiler-go.git
+cd boiler-go
+```
+
+## Environment configuration
+
+Create a `.env` file in the root directory by copying the example file:
+
+```bash
+cp .env.example .env
+```
+
+The `.env.example` file contains all necessary environment variables:
+
+```bash
+# ---------- server ----------
+APP_PORT=8080
+
+# ---------- database ----------
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/appdb?sslmode=disable
+
+# ---------- redis / asynq ----------
+REDIS_ADDR=localhost:6379
+REDIS_PASSWORD=
+REDIS_DB=0
+
+# ---------- timeouts ----------
+HEALTH_CHECK_TIMEOUT=2s
+API_SHUTDOWN_TIMEOUT=10s
+WORKER_SHUTDOWN_TIMEOUT=30s
+
+# ---------- logging ----------
+# Log output destination: stdout | file | both
+LOG_OUTPUT=stdout
+# Log file path (required when LOG_OUTPUT is "file" or "both")
+# Examples: logs/api.log, logs/worker.log, /var/log/app/app.log
+LOG_FILE=
+```
+
+### Configuration options
+
+<AccordionGroup>
+  <Accordion title="Server configuration">
+    - `APP_PORT`: The port on which the API server will run (default: 8080)
+  </Accordion>
+
+  <Accordion title="Database configuration">
+    - `DATABASE_URL`: PostgreSQL connection string with format `postgres://user:password@host:port/database?sslmode=disable`
+  </Accordion>
+
+  <Accordion title="Redis configuration">
+    - `REDIS_ADDR`: Redis server address (default: localhost:6379)
+    - `REDIS_PASSWORD`: Redis password (leave empty if no password)
+    - `REDIS_DB`: Redis database number (default: 0)
+  </Accordion>
+
+  <Accordion title="Timeout configuration">
+    - `HEALTH_CHECK_TIMEOUT`: Timeout for health check endpoints
+    - `API_SHUTDOWN_TIMEOUT`: Graceful shutdown timeout for API server
+    - `WORKER_SHUTDOWN_TIMEOUT`: Graceful shutdown timeout for background workers
+  </Accordion>
+
+  <Accordion title="Logging configuration">
+    - `LOG_OUTPUT`: Where logs should be written (`stdout`, `file`, or `both`)
+    - `LOG_FILE`: Path to log file (required when `LOG_OUTPUT` is `file` or `both`)
+  </Accordion>
+</AccordionGroup>
+
+## Install dependencies
+
+Install Go dependencies:
+
+```bash
+go mod download
+```
+
+## Start development services
+
+Start PostgreSQL and Redis using Docker Compose:
+
+```bash
+make dev
+```
+
+This command starts the required services in the background. To verify they're running:
+
+```bash
+docker ps
+```
+
+You should see containers for PostgreSQL and Redis.
+
+## Run database migrations
+
+Apply database migrations to set up the schema:
+
+```bash
+make migrate-up
+```
+
+For more information on migrations, see the [Database migrations](/development/database-migrations) guide.
+
+## Verify setup
+
+Your development environment is now ready. You can verify by running the test suite:
+
+```bash
+make test
+```
+
+Next, learn how to run the API server and background workers in [Running services](/development/running-services).

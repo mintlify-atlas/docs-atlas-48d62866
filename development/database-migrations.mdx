@@ -1,0 +1,273 @@
+---
+title: Database migrations
+description: Manage database schema changes with golang-migrate
+---
+
+## Overview
+
+Boiler-Go uses [golang-migrate](https://github.com/golang-migrate/migrate) to manage database schema migrations. Migrations are SQL files stored in the `migrations/` directory that version control your database schema.
+
+## Prerequisites
+
+Install the golang-migrate CLI tool:
+
+<CodeGroup>
+
+```bash macOS
+brew install golang-migrate
+```
+
+```bash Linux
+curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.0/migrate.linux-amd64.tar.gz | tar xvz
+sudo mv migrate /usr/local/bin/
+```
+
+```bash Go install
+go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+```
+
+</CodeGroup>
+
+## Migration structure
+
+Migrations are stored in the `migrations/` directory with sequential numbering:
+
+```
+migrations/
+├── 000001_init.sql
+├── 000002_add_users_table.sql
+└── 000003_add_indexes.sql
+```
+
+Each migration file contains SQL statements for schema changes. Here's an example from the initial migration:
+
+```sql migrations/000001_init.sql
+-- Initial database schema migration for boiler-go
+-- Enables pgcrypto for gen_random_uuid() and creates core tables.
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_type TEXT NOT NULL,
+    payload JSONB,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INT NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+```
+
+## Creating migrations
+
+<Steps>
+  <Step title="Generate migration files">
+    Create a new migration using the Makefile command:
+    
+    ```bash
+    make migrate-create name=add_email_verification
+    ```
+    
+    This creates a new migration file with sequential numbering:
+    
+    ```
+    migrations/000002_add_email_verification.sql
+    ```
+  </Step>
+  
+  <Step title="Write SQL statements">
+    Edit the generated file and add your SQL statements:
+    
+    ```sql
+    -- Add email verification to users table
+    ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT false;
+    ALTER TABLE users ADD COLUMN verification_token TEXT;
+    
+    CREATE INDEX idx_users_verification_token ON users(verification_token) WHERE verification_token IS NOT NULL;
+    ```
+  </Step>
+  
+  <Step title="Apply the migration">
+    Run the migration:
+    
+    ```bash
+    make migrate-up
+    ```
+  </Step>
+</Steps>
+
+## Running migrations
+
+### Apply all pending migrations
+
+Run all migrations that haven't been applied yet:
+
+```bash
+make migrate-up
+```
+
+This command:
+- Loads the `DATABASE_URL` from your `.env` file
+- Applies migrations in sequential order
+- Updates the schema version in the database
+
+### Rollback the last migration
+
+Rollback the most recently applied migration:
+
+```bash
+make migrate-down
+```
+
+<Warning>
+  Be careful with rollbacks in production. Always backup your database before running `migrate-down`.
+</Warning>
+
+## Migration commands reference
+
+The Makefile provides the following migration commands:
+
+| Command | Description |
+|---------|-------------|
+| `make migrate-up` | Apply all pending migrations |
+| `make migrate-down` | Rollback the last migration |
+| `make migrate-create name=<name>` | Create a new migration file |
+
+### Manual migration commands
+
+You can also use the migrate CLI directly:
+
+```bash
+# Check current version
+migrate -path ./migrations -database "$DATABASE_URL" version
+
+# Apply specific number of migrations
+migrate -path ./migrations -database "$DATABASE_URL" up 2
+
+# Rollback specific number of migrations
+migrate -path ./migrations -database "$DATABASE_URL" down 2
+
+# Force to specific version (use with caution)
+migrate -path ./migrations -database "$DATABASE_URL" force 1
+```
+
+## Best practices
+
+<CardGroup cols={2}>
+  <Card title="Make migrations idempotent" icon="arrows-rotate">
+    Use `IF NOT EXISTS` and `IF EXISTS` clauses to make migrations safely rerunnable.
+  </Card>
+  
+  <Card title="Keep migrations small" icon="minimize">
+    Create focused migrations that do one thing. This makes debugging and rollbacks easier.
+  </Card>
+  
+  <Card title="Test before production" icon="flask">
+    Always test migrations in development and staging before applying to production.
+  </Card>
+  
+  <Card title="Backup before rollback" icon="database">
+    Create a database backup before running `migrate-down` in production.
+  </Card>
+</CardGroup>
+
+### Migration guidelines
+
+- **Use descriptive names**: `add_user_roles` is better than `update_users`
+- **Avoid data migrations**: Separate schema changes from data transformations
+- **Document complex logic**: Add comments explaining why changes are needed
+- **Test rollbacks**: Verify that `migrate-down` works correctly
+
+## Docker Compose configuration
+
+The PostgreSQL service in `docker-compose.yml` is configured for development:
+
+```yaml docker-compose.yml
+postgres:
+  image: postgres:16-alpine
+  container_name: go_postgres
+  restart: always
+  environment:
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: appdb
+  ports:
+    - "5432:5432"
+  volumes:
+    - postgres_data:/var/lib/postgresql/data
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres"]
+    interval: 5s
+    timeout: 5s
+    retries: 5
+```
+
+Data persists in the `postgres_data` Docker volume, so migrations remain applied even after restarting containers.
+
+## Working with sqlc
+
+After modifying your database schema, regenerate type-safe Go code:
+
+```bash
+make sqlc
+```
+
+This command runs `sqlc generate`, which:
+- Reads your SQL queries from the codebase
+- Analyzes the current database schema
+- Generates Go structs and functions with type safety
+
+Learn more about sqlc in the [official documentation](https://docs.sqlc.dev/).
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Dirty database version">
+    If a migration fails midway, the database may be in a "dirty" state:
+    
+    ```bash
+    error: Dirty database version 1. Fix and force version.
+    ```
+    
+    To resolve:
+    
+    1. Manually fix the database schema
+    2. Force the version:
+    
+    ```bash
+    migrate -path ./migrations -database "$DATABASE_URL" force 1
+    ```
+  </Accordion>
+
+  <Accordion title="Connection refused">
+    Ensure PostgreSQL is running:
+    
+    ```bash
+    make dev
+    docker ps
+    ```
+    
+    Verify your `DATABASE_URL` in `.env` matches the Docker configuration.
+  </Accordion>
+
+  <Accordion title="Migration already applied">
+    This is normal. The migrate tool tracks which migrations have been applied and skips them automatically.
+  </Accordion>
+
+  <Accordion title="Syntax errors in SQL">
+    Test your SQL statements directly against the database before creating a migration:
+    
+    ```bash
+    docker exec -it go_postgres psql -U postgres -d appdb
+    ```
+  </Accordion>
+</AccordionGroup>

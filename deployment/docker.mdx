@@ -1,0 +1,317 @@
+---
+title: Docker deployment
+description: Deploy Boiler-Go using Docker and Docker Compose
+---
+
+## Overview
+
+Boiler-Go includes a production-ready Docker Compose configuration for running PostgreSQL and Redis. You can containerize your application or use Docker only for infrastructure services.
+
+## Docker Compose configuration
+
+The included `docker-compose.yml` provides two essential services:
+
+```yaml
+version: "3.9"
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: go_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: appdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: go_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  postgres_data:
+  redis_data:
+```
+
+## Quick start
+
+<Steps>
+  <Step title="Start infrastructure services">
+    ```bash
+    make dev
+    # or
+    docker-compose up -d
+    ```
+  </Step>
+
+  <Step title="Run database migrations">
+    ```bash
+    make migrate-up
+    ```
+  </Step>
+
+  <Step title="Start application services">
+    ```bash
+    # Terminal 1: Start API server
+    make api
+
+    # Terminal 2: Start background worker
+    make worker
+    ```
+  </Step>
+</Steps>
+
+## Infrastructure services
+
+<CardGroup cols={2}>
+  <Card title="PostgreSQL" icon="database">
+    **Image**: postgres:16-alpine
+    
+    **Port**: 5432
+    
+    **Features**:
+    - Persistent data storage
+    - Health check monitoring
+    - Automatic restart on failure
+  </Card>
+
+  <Card title="Redis" icon="bolt">
+    **Image**: redis:7-alpine
+    
+    **Port**: 6379
+    
+    **Features**:
+    - AOF persistence enabled
+    - Persistent data storage
+    - Automatic restart on failure
+  </Card>
+</CardGroup>
+
+## Data persistence
+
+Docker volumes ensure data survives container restarts:
+
+- `postgres_data`: PostgreSQL database files
+- `redis_data`: Redis persistence files (AOF)
+
+<Warning>
+  Deleting volumes will permanently erase all data. Use `docker-compose down -v` with caution.
+</Warning>
+
+## Health checks
+
+The PostgreSQL service includes built-in health monitoring:
+
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "pg_isready -U postgres"]
+  interval: 5s
+  timeout: 5s
+  retries: 5
+```
+
+This ensures the database is ready before dependent services start.
+
+## Production deployment
+
+### Containerizing the application
+
+Create a `Dockerfile` for your application:
+
+```dockerfile
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+
+# Copy dependency files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build binaries
+RUN CGO_ENABLED=0 GOOS=linux go build -o /api ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -o /worker ./cmd/worker
+
+# Production stage
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+
+# Copy binaries from builder
+COPY --from=builder /api .
+COPY --from=builder /worker .
+
+# Copy migrations (if needed)
+COPY migrations ./migrations
+
+# Expose API port
+EXPOSE 8080
+
+# Default to API server (override for worker)
+CMD ["./api"]
+```
+
+### Multi-container setup
+
+Extend `docker-compose.yml` to include application services:
+
+```yaml
+services:
+  api:
+    build: .
+    container_name: go_api
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/appdb?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: 0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    build: .
+    container_name: go_worker
+    restart: always
+    command: ["./worker"]
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/appdb?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: 0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+```
+
+<Note>
+  Notice the service names (postgres, redis) replace localhost in connection URLs when running inside Docker.
+</Note>
+
+## Common operations
+
+### View logs
+
+```bash
+# All services
+docker-compose logs -f
+
+# Specific service
+docker-compose logs -f postgres
+docker-compose logs -f redis
+```
+
+### Stop services
+
+```bash
+# Stop but keep data
+docker-compose down
+
+# Stop and remove volumes (deletes all data)
+docker-compose down -v
+```
+
+### Restart services
+
+```bash
+# Restart all
+docker-compose restart
+
+# Restart specific service
+docker-compose restart postgres
+```
+
+### Access database
+
+```bash
+# Using docker exec
+docker exec -it go_postgres psql -U postgres -d appdb
+
+# Using psql from host (requires PostgreSQL client)
+psql -h localhost -U postgres -d appdb
+```
+
+### Access Redis CLI
+
+```bash
+# Using docker exec
+docker exec -it go_redis redis-cli
+
+# Using redis-cli from host (requires Redis client)
+redis-cli -h localhost -p 6379
+```
+
+## Production considerations
+
+<CardGroup cols={2}>
+  <Card title="Security" icon="shield">
+    - Use strong passwords
+    - Enable SSL for PostgreSQL
+    - Use Redis AUTH
+    - Don't expose ports publicly
+    - Use secrets management
+  </Card>
+
+  <Card title="Performance" icon="gauge">
+    - Tune connection pool sizes
+    - Monitor resource usage
+    - Use appropriate restart policies
+    - Enable Redis persistence
+    - Regular backups
+  </Card>
+
+  <Card title="Networking" icon="network-wired">
+    - Use custom networks
+    - Implement service discovery
+    - Configure DNS properly
+    - Use internal communication
+    - Limit external exposure
+  </Card>
+
+  <Card title="Monitoring" icon="chart-line">
+    - Container health checks
+    - Resource limits
+    - Log aggregation
+    - Metrics collection
+    - Alert on failures
+  </Card>
+</CardGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Environment variables" href="/deployment/environment-variables" icon="gear">
+    Configure your application settings
+  </Card>
+
+  <Card title="Production checklist" href="/deployment/production-checklist" icon="list-check">
+    Ensure production readiness
+  </Card>
+</CardGroup>

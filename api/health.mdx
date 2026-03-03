@@ -1,0 +1,72 @@
+---
+title: Health check
+description: Check the health status of the application and its dependencies
+---
+
+The health endpoint verifies the status of database and Redis connections. It returns detailed status information along with response time metrics.
+
+## Endpoint
+
+```
+GET /health
+```
+
+**Authentication:** None required
+
+## Response
+
+The endpoint returns HTTP 200 when all services are healthy, or HTTP 503 when any service is down.
+
+<ResponseField name="status" type="object" required>
+  Health status of each service
+  
+  <ResponseField name="database" type="string" required>
+    Database connection status - either "up" or "down"
+  </ResponseField>
+  
+  <ResponseField name="redis" type="string" required>
+    Redis connection status - either "up" or "down"
+  </ResponseField>
+</ResponseField>
+
+<ResponseField name="checked" type="string" required>
+  UTC timestamp when the health check was performed
+</ResponseField>
+
+<ResponseField name="duration" type="integer" required>
+  Time taken to perform the health check in milliseconds
+</ResponseField>
+
+## Response examples
+
+<CodeGroup>
+
+```json Healthy (200)
+{
+  "status": {
+    "database": "up",
+    "redis": "up"
+  },
+  "checked": "2026-03-03T14:32:15.123Z",
+  "duration": 42
+}
+```
+
+```json Service unavailable (503)
+{
+  "status": {
+    "database": "down",
+    "redis": "up"
+  },
+  "checked": "2026-03-03T14:32:15.123Z",
+  "duration": 5002
+}
+```
+
+</CodeGroup>
+
+## Example request
+
+```bash
+curl -X GET http://localhost:8080/health
+```

@@ -1,0 +1,334 @@
+---
+title: Handler
+description: HTTP request handlers and routing with Echo
+---
+
+The `handler` package provides HTTP handlers for API endpoints including health checks, worker management, and request routing. It uses the Echo framework for HTTP handling.
+
+## Functions
+
+### NewRouter
+
+Creates and configures the HTTP router with all middleware and routes.
+
+```go
+func NewRouter(
+    log zerolog.Logger,
+    cfg *config.Config,
+    db *pgxpool.Pool,
+    redis *redis.Client,
+    scheduler *scheduler.Client,
+) http.Handler
+```
+
+<ParamField path="log" type="zerolog.Logger">
+  Base logger for request logging middleware
+</ParamField>
+
+<ParamField path="cfg" type="*config.Config">
+  Application configuration
+</ParamField>
+
+<ParamField path="db" type="*pgxpool.Pool">
+  Database connection pool
+</ParamField>
+
+<ParamField path="redis" type="*redis.Client">
+  Redis client for health checks
+</ParamField>
+
+<ParamField path="scheduler" type="*scheduler.Client">
+  Scheduler client for enqueueing tasks
+</ParamField>
+
+**Returns:** `http.Handler` - Configured Echo server instance
+
+**Middleware:**
+- Recovery from panics
+- CORS with configurable origins
+- Request logging with request IDs
+
+**Routes:**
+- `GET /health` - Health check endpoint
+- `GET /worker/status` - Worker queue status
+- `POST /worker/ping` - Enqueue test task
+
+## Health handler
+
+### NewHealthHandler
+
+Creates a handler for health check operations.
+
+```go
+func NewHealthHandler(
+    db *pgxpool.Pool,
+    redis *redis.Client,
+    timeout time.Duration,
+) *HealthHandler
+```
+
+<ParamField path="db" type="*pgxpool.Pool">
+  Database pool to check
+</ParamField>
+
+<ParamField path="redis" type="*redis.Client">
+  Redis client to check
+</ParamField>
+
+<ParamField path="timeout" type="time.Duration">
+  Timeout for health check operations
+</ParamField>
+
+**Returns:** `*HealthHandler` - Health check handler instance
+
+### Check
+
+Handles `GET /health` endpoint.
+
+```go
+func (h *HealthHandler) Check(c echo.Context) error
+```
+
+<ParamField path="c" type="echo.Context">
+  Echo request context
+</ParamField>
+
+**Returns:** `error` - Echo handler error
+
+**Response:** JSON with database and Redis status
+
+```json
+{
+  "status": {
+    "database": "up",
+    "redis": "up"
+  },
+  "checked": "2024-01-15T10:30:00Z",
+  "duration": 15
+}
+```
+
+**HTTP Status:**
+- `200 OK` - All services healthy
+- `503 Service Unavailable` - One or more services down
+
+## Worker handler
+
+### NewWorkerHandler
+
+Creates a handler for worker-related operations.
+
+```go
+func NewWorkerHandler(scheduler *scheduler.Client) *WorkerHandler
+```
+
+<ParamField path="scheduler" type="*scheduler.Client">
+  Scheduler client for task enqueueing
+</ParamField>
+
+**Returns:** `*WorkerHandler` - Worker handler instance
+
+### Status
+
+Handles `GET /worker/status` endpoint.
+
+```go
+func (h *WorkerHandler) Status(c echo.Context) error
+```
+
+**Response:**
+
+```json
+{
+  "scheduler": "connected",
+  "queues": ["critical", "default", "low"],
+  "note": "Use POST /worker/ping to test task processing"
+}
+```
+
+### Ping
+
+Handles `POST /worker/ping` endpoint to enqueue a test task.
+
+```go
+func (h *WorkerHandler) Ping(c echo.Context) error
+```
+
+**Request body:**
+
+```json
+{
+  "message": "custom ping message"
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "task_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
+  "task_type": "worker:ping",
+  "queued_at": "2024-01-15T10:30:00Z",
+  "message": "Task queued successfully. Check worker logs to verify processing."
+}
+```
+
+**HTTP Status:**
+- `202 Accepted` - Task queued successfully
+- `400 Bad Request` - Invalid request body
+- `503 Service Unavailable` - Failed to enqueue task
+
+## Usage
+
+### Setup router
+
+```go
+import (
+    "boiler-go/internal/config"
+    "boiler-go/internal/db"
+    "boiler-go/internal/handler"
+    "boiler-go/internal/scheduler"
+    "boiler-go/pkg/logger"
+)
+
+func main() {
+    cfg := config.Load(logger.New())
+    log := logger.New()
+    
+    // Initialize dependencies
+    db.Open(ctx, cfg)
+    rdb := redis.NewClient(&redis.Options{
+        Addr: cfg.RedisAddr,
+    })
+    schedulerClient := scheduler.NewClient(asynq.RedisClientOpt{
+        Addr: cfg.RedisAddr,
+    })
+    
+    // Create router
+    router := handler.NewRouter(log, cfg, db.Get(), rdb, schedulerClient)
+    
+    // Start server
+    http.ListenAndServe(":8080", router)
+}
+```
+
+### Example from API server
+
+```go
+// From cmd/api/main.go
+func main() {
+    cfg := config.Load(logger.New())
+    logg := newLogger(cfg, "logs/api.log")
+    ctx := context.Background()
+
+    // Initialize dependencies
+    dbCtx, dbCancel := context.WithTimeout(ctx, 10*time.Second)
+    defer dbCancel()
+    if err := db.Open(dbCtx, cfg); err != nil {
+        logg.Fatal().Err(err).Msg("failed to initialize database")
+    }
+    defer db.Close()
+
+    rdb := redis.NewClient(&redis.Options{
+        Addr:     cfg.RedisAddr,
+        Password: cfg.RedisPassword,
+        DB:       cfg.RedisDB,
+    })
+
+    schedulerClient := scheduler.NewClient(asynq.RedisClientOpt{
+        Addr:     cfg.RedisAddr,
+        Password: cfg.RedisPassword,
+        DB:       cfg.RedisDB,
+    })
+    defer schedulerClient.Close()
+
+    // Create router with all dependencies
+    router := handler.NewRouter(logg, cfg, db.Get(), rdb, schedulerClient)
+
+    server := &http.Server{
+        Addr:           ":" + cfg.AppPort,
+        Handler:        router,
+        ReadTimeout:    10 * time.Second,
+        WriteTimeout:   10 * time.Second,
+        IdleTimeout:    60 * time.Second,
+        MaxHeaderBytes: 1 << 20,
+    }
+
+    server.ListenAndServe()
+}
+```
+
+### Health check example
+
+```bash
+curl http://localhost:8080/health
+```
+
+```json
+{
+  "status": {
+    "database": "up",
+    "redis": "up"
+  },
+  "checked": "2024-01-15T10:30:00.123Z",
+  "duration": 15
+}
+```
+
+### Worker ping example
+
+```bash
+curl -X POST http://localhost:8080/worker/ping \
+  -H "Content-Type: application/json" \
+  -d '{"message": "testing worker"}'
+```
+
+```json
+{
+  "success": true,
+  "task_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
+  "task_type": "worker:ping",
+  "queued_at": "2024-01-15T10:30:00.456Z",
+  "message": "Task queued successfully. Check worker logs to verify processing."
+}
+```
+
+### Worker status example
+
+```bash
+curl http://localhost:8080/worker/status
+```
+
+```json
+{
+  "scheduler": "connected",
+  "queues": ["critical", "default", "low"],
+  "note": "Use POST /worker/ping to test task processing"
+}
+```
+
+## Request-scoped logging
+
+All handlers have access to request-scoped loggers with automatic request ID injection:
+
+```go
+func (h *HealthHandler) Check(c echo.Context) error {
+    log := logger.FromEchoContext(c)
+    
+    log.Info().Msg("health check started")
+    // Logs include request_id, method, and path automatically
+    
+    return c.JSON(200, status)
+}
+```
+
+## CORS configuration
+
+The router includes CORS middleware with the following defaults:
+
+- **Allowed origins:** `*`
+- **Allowed methods:** GET, POST, PUT, DELETE, OPTIONS
+- **Allowed headers:** Accept, Authorization, Content-Type, X-Request-ID
+- **Exposed headers:** Link, X-Request-ID
+- **Max age:** 300 seconds

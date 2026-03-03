@@ -1,0 +1,348 @@
+---
+title: Logging
+description: Learn how Boiler-Go implements structured logging with zerolog for both console and file output
+---
+
+Boiler-Go uses [zerolog](https://github.com/rs/zerolog) for fast, structured logging. The logger supports multiple output destinations including console and file logging.
+
+## Logger architecture
+
+The logging system is implemented in `pkg/logger/logger.go` with three main components:
+
+<CardGroup cols={3}>
+  <Card title="Global logger" icon="globe">
+    Singleton instance for fallback logging
+  </Card>
+  <Card title="Output configuration" icon="sliders">
+    Flexible stdout and file output
+  </Card>
+  <Card title="Thread safety" icon="lock">
+    Safe concurrent access with sync.Once
+  </Card>
+</CardGroup>
+
+## Output configuration
+
+The logger supports three output modes configured via `LOG_OUTPUT` environment variable:
+
+```go
+type OutputConfig struct {
+    // FilePath is the path to the log file. If empty, no file logging.
+    FilePath string
+    // Stdout enables console output.
+    Stdout bool
+    // StdoutOnly disables file output and only logs to stdout.
+    StdoutOnly bool
+}
+```
+
+### Output modes
+
+<Tabs>
+  <Tab title="stdout (default)">
+    Logs only to console with human-readable format:
+    
+    ```bash
+    LOG_OUTPUT=stdout
+    ```
+    
+    <Note>
+      This is the default mode and recommended for development.
+    </Note>
+  </Tab>
+  
+  <Tab title="file">
+    Logs only to file, no console output:
+    
+    ```bash
+    LOG_OUTPUT=file
+    LOG_FILE=logs/app.log
+    ```
+    
+    <Warning>
+      Without console output, you won't see logs in real-time during development.
+    </Warning>
+  </Tab>
+  
+  <Tab title="both">
+    Logs to both console and file:
+    
+    ```bash
+    LOG_OUTPUT=both
+    LOG_FILE=logs/app.log
+    ```
+    
+    <Tip>
+      Use this mode in production to get real-time visibility while maintaining persistent logs.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## Creating loggers
+
+### Basic logger
+
+Create a logger with default stdout configuration:
+
+```go
+import "boiler-go/pkg/logger"
+
+logg := logger.New()
+logg.Info().Msg("application starting")
+```
+
+### Configured logger
+
+Both `cmd/api/main.go` and `cmd/worker/main.go` implement the `newLogger()` function:
+
+```go
+func newLogger(cfg *config.Config, defaultFile string) zerolog.Logger {
+    outputCfg := logger.OutputConfig{}
+    
+    switch cfg.LogOutput {
+    case "stdout":
+        outputCfg.Stdout = true
+        outputCfg.StdoutOnly = true
+    case "file":
+        outputCfg.Stdout = false
+        outputCfg.StdoutOnly = false
+        outputCfg.FilePath = cfg.LogFile
+        if outputCfg.FilePath == "" {
+            outputCfg.FilePath = defaultFile
+        }
+    case "both":
+        outputCfg.Stdout = true
+        outputCfg.StdoutOnly = false
+        outputCfg.FilePath = cfg.LogFile
+        if outputCfg.FilePath == "" {
+            outputCfg.FilePath = defaultFile
+        }
+    }
+    
+    return logger.NewWithOutput(outputCfg)
+}
+```
+
+### Usage in applications
+
+<CodeGroup>
+  ```go API server
+  // cmd/api/main.go:56
+  logg := newLogger(cfg, "logs/api.log")
+  ```
+  
+  ```go Worker
+  // cmd/worker/main.go:62
+  logg := newLogger(cfg, "logs/worker.log")
+  ```
+</CodeGroup>
+
+## Console output format
+
+The console writer uses a human-readable format with timestamps:
+
+```go
+zerolog.ConsoleWriter{
+    Out:        os.Stdout,
+    TimeFormat: "2006-01-02 15:04:05",
+}
+```
+
+**Example output:**
+
+```
+2024-03-15 14:23:10 INF server starting port=8080
+2024-03-15 14:23:10 INF database connected
+2024-03-15 14:23:10 INF redis connected
+```
+
+## Structured logging
+
+Zerolog supports structured fields for better log analysis:
+
+<Accordion title="Common field types">
+  ```go
+  logg.Info().
+      Str("user_id", "123").           // String field
+      Int("count", 42).                // Integer field
+      Dur("duration", elapsed).        // Duration field
+      Err(err).                        // Error field
+      Bool("success", true).           // Boolean field
+      Time("created_at", time.Now()).  // Time field
+      Msg("operation completed")
+  ```
+</Accordion>
+
+### Real-world examples
+
+<CodeGroup>
+  ```go Server startup
+  // cmd/api/main.go:102-104
+  logg.Info().
+      Str("port", cfg.AppPort).
+      Msg("server starting")
+  ```
+  
+  ```go Error logging
+  // cmd/api/main.go:128
+  logg.Error().
+      Err(err).
+      Msg("server shutdown failed")
+  ```
+  
+  ```go Task processing
+  // cmd/worker/main.go:192-195
+  logg.Info().
+      Str("task_type", task.Type()).
+      Str("task_id", taskID).
+      Msg("task started")
+  ```
+  
+  ```go With duration
+  // cmd/worker/main.go:208-211
+  logg.Info().
+      Str("task_type", task.Type()).
+      Dur("duration", duration).
+      Msg("task completed")
+  ```
+</CodeGroup>
+
+## Log levels
+
+Zerolog supports multiple log levels (default level is `Info`):
+
+```go
+logg.Debug().Msg("detailed debugging information")
+logg.Info().Msg("informational message")
+logg.Warn().Msg("warning message")
+logg.Error().Err(err).Msg("error occurred")
+logg.Fatal().Err(err).Msg("critical error, exiting") // Calls os.Exit(1)
+```
+
+<Warning>
+  `Fatal()` calls `os.Exit(1)` after logging. Use it only for unrecoverable errors during startup.
+</Warning>
+
+### Fatal logging examples
+
+<CodeGroup>
+  ```go Configuration error
+  // cmd/api/main.go:63
+  if err := db.Open(dbCtx, cfg); err != nil {
+      logg.Fatal().Err(err).Msg("failed to initialize database")
+  }
+  ```
+  
+  ```go Startup failure
+  // cmd/api/main.go:116
+  case err := <-serverErrors:
+      logg.Fatal().Err(err).Msg("server startup failed")
+  ```
+</CodeGroup>
+
+## File logging
+
+When file output is enabled, the logger automatically:
+
+1. Creates the log directory if it doesn't exist
+2. Opens the file in append mode
+3. Falls back to stdout if file operations fail
+
+```go
+// pkg/logger/logger.go:49-56
+dir := filepath.Dir(cfg.FilePath)
+if dir != "" && dir != "." {
+    if err := os.MkdirAll(dir, 0755); err != nil {
+        fmt.Fprintf(os.Stderr, "failed to create log directory: %v\n", err)
+        return zerolog.New(os.Stdout).With().Timestamp().Logger()
+    }
+}
+
+file, err := os.OpenFile(cfg.FilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+```
+
+<Note>
+  The logger creates parent directories automatically. You don't need to manually create `logs/` directories.
+</Note>
+
+## Multi-writer output
+
+When logging to both stdout and file, zerolog uses `MultiLevelWriter`:
+
+```go
+// pkg/logger/logger.go:79
+output = zerolog.MultiLevelWriter(writers...)
+```
+
+This ensures logs are written atomically to all destinations.
+
+## Global logger
+
+The package provides a global logger for cases where dependency injection isn't available:
+
+```go
+import "boiler-go/pkg/logger"
+
+func someFunction() {
+    logg := logger.Global()
+    logg.Info().Msg("using global logger")
+}
+```
+
+<Tip>
+  Prefer passing loggers explicitly over using the global instance. This makes testing easier and dependencies clearer.
+</Tip>
+
+The global logger is initialized lazily:
+
+```go
+// pkg/logger/logger.go:87-92
+func Global() zerolog.Logger {
+    globalOnce.Do(func() {
+        global = New()
+    })
+    return global
+}
+```
+
+## Best practices
+
+1. **Pass loggers as parameters**: Avoid relying on the global logger
+2. **Use structured fields**: Include contextual information in every log
+3. **Log at appropriate levels**: Reserve `Error` for actual errors, use `Info` for normal operation
+4. **Include correlation IDs**: Add request IDs to track requests across services
+5. **Don't log sensitive data**: Avoid logging passwords, tokens, or PII
+
+### Request logging example
+
+```go
+func HandleRequest(w http.ResponseWriter, r *http.Request, logg zerolog.Logger) {
+    requestID := generateRequestID()
+    
+    logg.Info().
+        Str("request_id", requestID).
+        Str("method", r.Method).
+        Str("path", r.URL.Path).
+        Str("remote_addr", r.RemoteAddr).
+        Msg("request started")
+    
+    // Process request...
+    
+    logg.Info().
+        Str("request_id", requestID).
+        Int("status", 200).
+        Msg("request completed")
+}
+```
+
+## Configuration reference
+
+<ParamField path="LOG_OUTPUT" type="string" default="stdout">
+  Output destination: `stdout`, `file`, or `both`
+</ParamField>
+
+<ParamField path="LOG_FILE" type="string">
+  File path when using `file` or `both` mode. Defaults:
+  - API: `logs/api.log`
+  - Worker: `logs/worker.log`
+</ParamField>

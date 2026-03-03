@@ -1,0 +1,177 @@
+---
+title: Config
+description: Environment configuration management with validation
+---
+
+The `config` package provides centralized configuration management for Boiler-Go applications. It loads environment variables from `.env` files and system environment, validates them, and provides a singleton configuration instance.
+
+## Types
+
+### Config
+
+The main configuration struct that holds all application settings.
+
+```go
+type Config struct {
+    // Server
+    AppPort string
+
+    // Database
+    DatabaseURL string
+
+    // Redis / Asynq
+    RedisAddr     string
+    RedisPassword string
+    RedisDB       int
+
+    // Timeouts
+    HealthCheckTimeout    time.Duration
+    APIShutdownTimeout    time.Duration
+    WorkerShutdownTimeout time.Duration
+
+    // Logging
+    LogOutput string
+    LogFile   string
+}
+```
+
+<ParamField path="AppPort" type="string" default="8080">
+  The port number on which the API server will listen
+</ParamField>
+
+<ParamField path="DatabaseURL" type="string" required>
+  PostgreSQL connection string (e.g., `postgres://user:pass@localhost:5432/dbname`)
+</ParamField>
+
+<ParamField path="RedisAddr" type="string" required>
+  Redis server address (e.g., `localhost:6379`)
+</ParamField>
+
+<ParamField path="RedisPassword" type="string">
+  Redis authentication password
+</ParamField>
+
+<ParamField path="RedisDB" type="int" default="0">
+  Redis database index (0-15)
+</ParamField>
+
+<ParamField path="HealthCheckTimeout" type="time.Duration" default="2s">
+  Timeout for health check operations
+</ParamField>
+
+<ParamField path="APIShutdownTimeout" type="time.Duration" default="10s">
+  Graceful shutdown timeout for API server
+</ParamField>
+
+<ParamField path="WorkerShutdownTimeout" type="time.Duration" default="30s">
+  Graceful shutdown timeout for worker processes
+</ParamField>
+
+<ParamField path="LogOutput" type="string" default="stdout">
+  Log output destination: `stdout`, `file`, or `both`
+</ParamField>
+
+<ParamField path="LogFile" type="string">
+  Path to log file when LogOutput is `file` or `both`. Defaults to `logs/api.log` for API and `logs/worker.log` for worker
+</ParamField>
+
+## Functions
+
+### Load
+
+Initializes configuration from environment variables and validates all settings. This function fails fast if any configuration is invalid.
+
+```go
+func Load(logg zerolog.Logger) *Config
+```
+
+<ParamField path="logg" type="zerolog.Logger">
+  Logger instance for configuration-related logging
+</ParamField>
+
+**Returns:** `*Config` - Validated configuration instance
+
+**Behavior:**
+- Attempts to load `.env` file (optional)
+- Parses environment variables using struct tags
+- Validates required fields and formats
+- Exits the application on validation errors
+- Returns singleton configuration instance
+
+## Usage
+
+### Basic usage
+
+```go
+import (
+    "boiler-go/internal/config"
+    "boiler-go/pkg/logger"
+)
+
+func main() {
+    // Load configuration with a logger
+    cfg := config.Load(logger.New())
+
+    // Access configuration values
+    fmt.Printf("Starting server on port %s\n", cfg.AppPort)
+    fmt.Printf("Database: %s\n", cfg.DatabaseURL)
+}
+```
+
+### Example from API server
+
+```go
+// From cmd/api/main.go
+func main() {
+    // Load config first with basic logger
+    cfg := config.Load(logger.New())
+
+    // Create logger based on configuration
+    logg := newLogger(cfg, "logs/api.log")
+    ctx := context.Background()
+
+    // Initialize database pool with timeout context
+    dbCtx, dbCancel := context.WithTimeout(ctx, 10*time.Second)
+    defer dbCancel()
+    if err := db.Open(dbCtx, cfg); err != nil {
+        logg.Fatal().Err(err).Msg("failed to initialize database")
+    }
+
+    // Use configuration for server setup
+    server := &http.Server{
+        Addr:           ":" + cfg.AppPort,
+        Handler:        router,
+        ReadTimeout:    10 * time.Second,
+        WriteTimeout:   10 * time.Second,
+        IdleTimeout:    60 * time.Second,
+        MaxHeaderBytes: 1 << 20,
+    }
+}
+```
+
+## Environment variables
+
+| Variable | Type | Default | Required | Description |
+|----------|------|---------|----------|-------------|
+| `APP_PORT` | string | `8080` | No | API server port |
+| `DATABASE_URL` | string | - | Yes | PostgreSQL connection string |
+| `REDIS_ADDR` | string | - | Yes | Redis server address |
+| `REDIS_PASSWORD` | string | - | No | Redis password |
+| `REDIS_DB` | int | `0` | No | Redis database index |
+| `HEALTH_CHECK_TIMEOUT` | duration | `2s` | No | Health check timeout |
+| `API_SHUTDOWN_TIMEOUT` | duration | `10s` | No | API shutdown timeout |
+| `WORKER_SHUTDOWN_TIMEOUT` | duration | `30s` | No | Worker shutdown timeout |
+| `LOG_OUTPUT` | string | `stdout` | No | Log output destination |
+| `LOG_FILE` | string | - | No | Log file path |
+
+## Validation
+
+The `Load` function performs comprehensive validation:
+
+- **Database URL:** Must use `postgres://` or `postgresql://` scheme with valid host and database name
+- **Port:** Must be a number between 1 and 65535
+- **Redis DB:** Must be between 0 and 15
+- **Timeouts:** Must be positive durations
+- **Log Output:** Must be `stdout`, `file`, or `both`
+
+Any validation failure causes the application to exit with a fatal error.

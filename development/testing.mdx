@@ -1,0 +1,453 @@
+---
+title: Testing
+description: Run and write tests for Boiler-Go applications
+---
+
+## Running tests
+
+Run the entire test suite using the Makefile command:
+
+```bash
+make test
+```
+
+This executes `go test -race ./...`, which:
+- Runs all tests in the project recursively
+- Enables the race detector to catch concurrency issues
+- Provides detailed output for failures
+
+### Test output
+
+Successful test runs show:
+
+```bash
+ok      github.com/yourusername/boiler-go/internal/api      0.123s
+ok      github.com/yourusername/boiler-go/internal/worker   0.089s
+ok      github.com/yourusername/boiler-go/internal/db       0.156s
+```
+
+Failed tests display detailed error messages and stack traces.
+
+## Test structure
+
+Boiler-Go follows Go's standard testing conventions:
+
+```
+internal/
+├── api/
+│   ├── handler.go
+│   └── handler_test.go
+├── worker/
+│   ├── processor.go
+│   └── processor_test.go
+└── db/
+    ├── queries.go
+    └── queries_test.go
+```
+
+Test files:
+- Are named with the `_test.go` suffix
+- Live alongside the code they test
+- Use the `testing` package from Go's standard library
+
+## Writing tests
+
+### Basic test structure
+
+Here's a simple test example:
+
+```go handler_test.go
+package api
+
+import (
+    "testing"
+)
+
+func TestHealthCheck(t *testing.T) {
+    // Setup
+    handler := NewHandler()
+    
+    // Execute
+    result := handler.HealthCheck()
+    
+    // Assert
+    if result.Status != "healthy" {
+        t.Errorf("expected status 'healthy', got '%s'", result.Status)
+    }
+}
+```
+
+### Table-driven tests
+
+Use table-driven tests for multiple test cases:
+
+```go validation_test.go
+func TestEmailValidation(t *testing.T) {
+    tests := []struct {
+        name    string
+        email   string
+        wantErr bool
+    }{
+        {
+            name:    "valid email",
+            email:   "user@example.com",
+            wantErr: false,
+        },
+        {
+            name:    "invalid email - no @",
+            email:   "userexample.com",
+            wantErr: true,
+        },
+        {
+            name:    "invalid email - no domain",
+            email:   "user@",
+            wantErr: true,
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            err := ValidateEmail(tt.email)
+            if (err != nil) != tt.wantErr {
+                t.Errorf("ValidateEmail() error = %v, wantErr %v", err, tt.wantErr)
+            }
+        })
+    }
+}
+```
+
+### Testing with dependencies
+
+Use interfaces and dependency injection for testable code:
+
+```go service_test.go
+type mockDB struct {
+    users []User
+}
+
+func (m *mockDB) GetUser(id string) (*User, error) {
+    for _, user := range m.users {
+        if user.ID == id {
+            return &user, nil
+        }
+    }
+    return nil, errors.New("user not found")
+}
+
+func TestUserService(t *testing.T) {
+    // Setup mock database
+    mockDB := &mockDB{
+        users: []User{
+            {ID: "1", Email: "test@example.com"},
+        },
+    }
+    
+    // Create service with mock
+    service := NewUserService(mockDB)
+    
+    // Test
+    user, err := service.GetUser("1")
+    if err != nil {
+        t.Fatalf("unexpected error: %v", err)
+    }
+    
+    if user.Email != "test@example.com" {
+        t.Errorf("expected email 'test@example.com', got '%s'", user.Email)
+    }
+}
+```
+
+## Testing HTTP handlers
+
+Test HTTP handlers using `httptest`:
+
+```go api_test.go
+import (
+    "net/http"
+    "net/http/httptest"
+    "testing"
+)
+
+func TestHealthEndpoint(t *testing.T) {
+    // Create request
+    req := httptest.NewRequest(http.MethodGet, "/health", nil)
+    w := httptest.NewRecorder()
+    
+    // Call handler
+    handler := NewAPIHandler()
+    handler.ServeHTTP(w, req)
+    
+    // Check response
+    if w.Code != http.StatusOK {
+        t.Errorf("expected status 200, got %d", w.Code)
+    }
+    
+    expected := `{"status":"healthy"}`
+    if w.Body.String() != expected {
+        t.Errorf("expected body %s, got %s", expected, w.Body.String())
+    }
+}
+```
+
+## Database testing
+
+For integration tests that require a database:
+
+<Steps>
+  <Step title="Start test database">
+    Use Docker Compose to start a test database:
+    
+    ```bash
+    make dev
+    ```
+  </Step>
+  
+  <Step title="Run migrations">
+    Apply migrations to the test database:
+    
+    ```bash
+    make migrate-up
+    ```
+  </Step>
+  
+  <Step title="Set test environment">
+    Use a separate `.env.test` file or set `DATABASE_URL` in test code:
+    
+    ```go
+    func setupTestDB(t *testing.T) *sql.DB {
+        dbURL := os.Getenv("TEST_DATABASE_URL")
+        if dbURL == "" {
+            t.Skip("TEST_DATABASE_URL not set")
+        }
+        
+        db, err := sql.Open("postgres", dbURL)
+        if err != nil {
+            t.Fatalf("failed to connect to test database: %v", err)
+        }
+        
+        return db
+    }
+    ```
+  </Step>
+  
+  <Step title="Clean up after tests">
+    Reset database state between tests:
+    
+    ```go
+    func teardownTestDB(t *testing.T, db *sql.DB) {
+        _, err := db.Exec("TRUNCATE users, jobs CASCADE")
+        if err != nil {
+            t.Errorf("failed to clean test database: %v", err)
+        }
+        db.Close()
+    }
+    ```
+  </Step>
+</Steps>
+
+## Test coverage
+
+Generate test coverage reports:
+
+```bash
+go test -race -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out -o coverage.html
+```
+
+View coverage in your browser:
+
+```bash
+open coverage.html
+```
+
+### Coverage by package
+
+Check coverage for specific packages:
+
+```bash
+go test -cover ./internal/api
+go test -cover ./internal/worker
+go test -cover ./internal/db
+```
+
+## Race detection
+
+The `-race` flag enables Go's race detector:
+
+```bash
+go test -race ./...
+```
+
+The race detector catches:
+- Concurrent read/write conflicts
+- Data races in goroutines
+- Unsafe concurrent access to maps
+
+<Warning>
+  Always run tests with `-race` enabled before deploying. Race conditions can cause subtle bugs in production.
+</Warning>
+
+## Benchmarking
+
+Write benchmark tests for performance-critical code:
+
+```go benchmark_test.go
+func BenchmarkUserLookup(b *testing.B) {
+    db := setupBenchmarkDB()
+    defer db.Close()
+    
+    b.ResetTimer()
+    
+    for i := 0; i < b.N; i++ {
+        _, err := db.GetUser("test-user-id")
+        if err != nil {
+            b.Fatal(err)
+        }
+    }
+}
+```
+
+Run benchmarks:
+
+```bash
+go test -bench=. -benchmem ./...
+```
+
+## Running specific tests
+
+<CodeGroup>
+
+```bash Run tests by pattern
+go test -run TestUser ./...
+```
+
+```bash Run tests in specific package
+go test ./internal/api
+```
+
+```bash Verbose output
+go test -v ./...
+```
+
+```bash Short mode (skip long tests)
+go test -short ./...
+```
+
+</CodeGroup>
+
+## Continuous integration
+
+Add tests to your CI pipeline:
+
+```yaml .github/workflows/test.yml
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      
+      - name: Run tests
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/testdb?sslmode=disable
+          REDIS_ADDR: localhost:6379
+        run: make test
+```
+
+## Best practices
+
+<CardGroup cols={2}>
+  <Card title="Test behavior, not implementation" icon="bullseye">
+    Focus on testing what code does, not how it does it. This makes tests more resilient to refactoring.
+  </Card>
+  
+  <Card title="Use descriptive test names" icon="tag">
+    Test names should describe the scenario and expected outcome: `TestCreateUser_WithInvalidEmail_ReturnsError`
+  </Card>
+  
+  <Card title="Keep tests independent" icon="arrows-split-up-and-left">
+    Each test should run independently without relying on other tests' state or execution order.
+  </Card>
+  
+  <Card title="Test edge cases" icon="diamond">
+    Don't just test the happy path. Test error conditions, boundary values, and unexpected inputs.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Tests fail with database connection errors">
+    Ensure development services are running:
+    
+    ```bash
+    make dev
+    docker ps
+    ```
+    
+    Verify `DATABASE_URL` in `.env` is correct.
+  </Accordion>
+
+  <Accordion title="Race detector reports data races">
+    Race conditions must be fixed. Common solutions:
+    
+    - Use mutexes for shared state
+    - Pass data through channels
+    - Use atomic operations
+    - Avoid global variables
+  </Accordion>
+
+  <Accordion title="Tests are slow">
+    Use `t.Parallel()` to run tests concurrently:
+    
+    ```go
+    func TestSomething(t *testing.T) {
+        t.Parallel()
+        // test code
+    }
+    ```
+    
+    Or use `-short` flag to skip long-running tests:
+    
+    ```go
+    if testing.Short() {
+        t.Skip("skipping long test")
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Import cycle errors">
+    Restructure packages to avoid circular dependencies, or move test code to a separate `_test` package:
+    
+    ```go
+    package api_test // instead of package api
+    ```
+  </Accordion>
+</AccordionGroup>

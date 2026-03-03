@@ -1,0 +1,176 @@
+---
+title: Database pool
+description: Learn how Boiler-Go manages PostgreSQL connections using pgxpool for optimal performance and reliability
+---
+
+Boiler-Go uses [pgxpool](https://github.com/jackc/pgx) to manage PostgreSQL database connections efficiently. The connection pool is initialized once at startup and shared across the application.
+
+## Architecture
+
+The database pool is implemented as a singleton with thread-safe access using `sync.RWMutex`. This ensures:
+
+- Single initialization per application lifecycle
+- Safe concurrent access from multiple goroutines
+- Clean shutdown with proper resource cleanup
+
+## Pool configuration
+
+The pool is configured in `internal/db/pool.go:28-36` with production-ready defaults:
+
+```go
+poolConfig.MaxConns = 15
+poolConfig.MinConns = 2
+poolConfig.MaxConnLifetime = 30 * time.Minute
+poolConfig.MaxConnIdleTime = 5 * time.Minute
+poolConfig.HealthCheckPeriod = 1 * time.Minute
+```
+
+<Accordion title="Configuration parameters explained">
+  <ResponseField name="MaxConns" type="int" default="15">
+    Maximum number of concurrent connections. Prevents database overload.
+  </ResponseField>
+  
+  <ResponseField name="MinConns" type="int" default="2">
+    Minimum connections kept alive. Reduces latency for incoming requests.
+  </ResponseField>
+  
+  <ResponseField name="MaxConnLifetime" type="duration" default="30m">
+    Maximum time a connection can be reused before being closed and recreated.
+  </ResponseField>
+  
+  <ResponseField name="MaxConnIdleTime" type="duration" default="5m">
+    Maximum time an idle connection stays open before being closed.
+  </ResponseField>
+  
+  <ResponseField name="HealthCheckPeriod" type="duration" default="1m">
+    Interval between automatic health checks on idle connections.
+  </ResponseField>
+</Accordion>
+
+## Initialization
+
+The pool is initialized in both `cmd/api/main.go` and `cmd/worker/main.go` with a timeout context:
+
+```go
+// Initialize database pool with timeout context
+dbCtx, dbCancel := context.WithTimeout(ctx, 10*time.Second)
+defer dbCancel()
+
+if err := db.Open(dbCtx, cfg); err != nil {
+    logg.Fatal().Err(err).Msg("failed to initialize database")
+}
+logg.Info().Msg("database connected")
+defer db.Close()
+```
+
+<Steps>
+  <Step title="Parse configuration">
+    The `DATABASE_URL` from config is parsed into `pgxpool.Config`
+  </Step>
+  
+  <Step title="Create pool">
+    A new connection pool is created with the configured parameters
+  </Step>
+  
+  <Step title="Health check">
+    The pool performs a ping to verify database connectivity
+  </Step>
+  
+  <Step title="Store singleton">
+    The pool is stored in the package-level variable for global access
+  </Step>
+</Steps>
+
+<Warning>
+  If the pool is already initialized, calling `Open()` again returns an error: `"database pool already initialized"`. This prevents accidental re-initialization.
+</Warning>
+
+## Usage
+
+Access the pool anywhere in your application using the thread-safe getter:
+
+```go
+pool := db.Get()
+row := pool.QueryRow(ctx, "SELECT name FROM users WHERE id = $1", userID)
+```
+
+### Example query
+
+```go
+func GetUser(ctx context.Context, userID int) (*User, error) {
+    pool := db.Get()
+    
+    var user User
+    err := pool.QueryRow(ctx,
+        "SELECT id, name, email FROM users WHERE id = $1",
+        userID,
+    ).Scan(&user.ID, &user.Name, &user.Email)
+    
+    if err != nil {
+        return nil, fmt.Errorf("query failed: %w", err)
+    }
+    
+    return &user, nil
+}
+```
+
+## Shutdown
+
+The pool is automatically closed during graceful shutdown:
+
+```go
+defer db.Close()
+```
+
+This ensures:
+- All active connections are properly closed
+- Resources are released back to the OS
+- No connection leaks occur
+
+<Tip>
+  Always use `defer db.Close()` immediately after successful initialization to guarantee cleanup even if the application panics.
+</Tip>
+
+## Error handling
+
+The initialization process includes comprehensive error handling:
+
+<CodeGroup>
+  ```go Config parsing error
+  if err != nil {
+      return fmt.Errorf("failed to parse database config: %w", err)
+  }
+  ```
+  
+  ```go Pool creation error
+  if err != nil {
+      return fmt.Errorf("failed to create pool: %w", err)
+  }
+  ```
+  
+  ```go Connectivity error
+  if err := newPool.Ping(ctx); err != nil {
+      newPool.Close() // Clean up the pool on ping failure
+      return fmt.Errorf("database unreachable: %w", err)
+  }
+  ```
+</CodeGroup>
+
+<Note>
+  The pool automatically cleans itself up if the ping fails, preventing resource leaks even during initialization failures.
+</Note>
+
+## Best practices
+
+1. **Always use context**: Pass a context with appropriate timeout to all queries
+2. **Connection limit**: Keep `MaxConns` aligned with your database's `max_connections` setting
+3. **Monitor metrics**: Use `pool.Stat()` to track connection pool health
+4. **Avoid connection exhaustion**: Ensure all queries complete within reasonable timeframes
+
+```go
+// Get pool statistics
+stats := pool.Stat()
+fmt.Printf("Total connections: %d\n", stats.TotalConns())
+fmt.Printf("Idle connections: %d\n", stats.IdleConns())
+fmt.Printf("Acquired connections: %d\n", stats.AcquiredConns())
+```

@@ -1,0 +1,117 @@
+---
+title: Worker ping
+description: Enqueue a test task to verify worker is processing jobs
+---
+
+The worker ping endpoint enqueues a test task to verify that the worker system is operational and processing jobs correctly. This is useful for testing and monitoring worker health.
+
+## Endpoint
+
+```
+POST /worker/ping
+```
+
+**Authentication:** None required
+
+## Request
+
+<ParamField body="message" type="string" optional>
+  Optional custom message to include in the task payload. Defaults to "ping from API" if not provided.
+</ParamField>
+
+### Headers
+
+<ParamField header="X-Request-ID" type="string" optional>
+  Correlation ID for tracking the request through logs
+</ParamField>
+
+## Response
+
+Returns HTTP 202 when the task is successfully queued, or an error status if queuing fails.
+
+<ResponseField name="success" type="boolean" required>
+  Indicates whether the task was successfully enqueued
+</ResponseField>
+
+<ResponseField name="task_id" type="string" required>
+  Unique identifier for the enqueued task
+</ResponseField>
+
+<ResponseField name="task_type" type="string" required>
+  Type of the task - will be "worker:ping"
+</ResponseField>
+
+<ResponseField name="queued_at" type="string" required>
+  UTC timestamp when the task was queued
+</ResponseField>
+
+<ResponseField name="message" type="string" optional>
+  Additional information about the queued task
+</ResponseField>
+
+## Response examples
+
+<CodeGroup>
+
+```json Success (202)
+{
+  "success": true,
+  "task_id": "01HX1234ABCD5678EFGH9012",
+  "task_type": "worker:ping",
+  "queued_at": "2026-03-03T14:32:15.456Z",
+  "message": "Task queued successfully. Check worker logs to verify processing."
+}
+```
+
+```json Invalid request (400)
+{
+  "error": "invalid request body"
+}
+```
+
+```json Service unavailable (503)
+{
+  "error": "failed to enqueue task",
+  "details": "connection refused"
+}
+```
+
+```json Internal error (500)
+{
+  "error": "failed to create task payload"
+}
+```
+
+</CodeGroup>
+
+## Example requests
+
+<CodeGroup>
+
+```bash Default message
+curl -X POST http://localhost:8080/worker/ping
+```
+
+```bash Custom message
+curl -X POST http://localhost:8080/worker/ping \
+  -H "Content-Type: application/json" \
+  -d '{"message": "testing worker connectivity"}'
+```
+
+```bash With request ID
+curl -X POST http://localhost:8080/worker/ping \
+  -H "Content-Type: application/json" \
+  -H "X-Request-ID: req-12345" \
+  -d '{"message": "health check"}'
+```
+
+</CodeGroup>
+
+## Task configuration
+
+The ping task is configured with the following settings:
+
+- **Queue:** default
+- **Max retries:** 3
+- **Timeout:** 30 seconds
+- **Request body limit:** 1 MB

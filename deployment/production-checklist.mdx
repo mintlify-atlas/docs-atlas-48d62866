@@ -1,0 +1,812 @@
+---
+title: Production checklist
+description: Comprehensive checklist to ensure your Boiler-Go deployment is production-ready
+---
+
+## Overview
+
+This checklist covers all critical aspects of deploying Boiler-Go to production, based on the built-in production-ready features and best practices.
+
+## Configuration
+
+<AccordionGroup>
+  <Accordion title="Environment variables">
+    <Steps>
+      <Step title="Required variables are set">
+        ```bash
+        DATABASE_URL=postgres://user:pass@host:5432/db?sslmode=require
+        REDIS_ADDR=redis-host:6379
+        ```
+        
+        See `internal/config/config.go:61-74` for validation logic.
+      </Step>
+
+      <Step title="Database URL uses SSL">
+        ```bash
+        # Production
+        DATABASE_URL=postgres://user:pass@host:5432/db?sslmode=require
+        
+        # NOT in production
+        DATABASE_URL=postgres://user:pass@host:5432/db?sslmode=disable
+        ```
+        
+        <Warning>
+          Always use `sslmode=require` or higher in production to encrypt database connections.
+        </Warning>
+      </Step>
+
+      <Step title="Redis password is configured">
+        ```bash
+        REDIS_PASSWORD=your_secure_password_here
+        ```
+        
+        Enable Redis AUTH in production to prevent unauthorized access.
+      </Step>
+
+      <Step title="Timeouts are appropriate">
+        ```bash
+        HEALTH_CHECK_TIMEOUT=5s
+        API_SHUTDOWN_TIMEOUT=30s
+        WORKER_SHUTDOWN_TIMEOUT=60s
+        ```
+        
+        Production systems should allow more time for graceful shutdown than development.
+      </Step>
+
+      <Step title="Logging is configured">
+        ```bash
+        # For containers (Docker, Kubernetes)
+        LOG_OUTPUT=stdout
+        
+        # For traditional servers
+        LOG_OUTPUT=file
+        LOG_FILE=/var/log/boiler-go/api.log
+        ```
+        
+        Configure based on your deployment platform and log aggregation strategy.
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Database configuration">
+    <Steps>
+      <Step title="Connection pool is tuned">
+        Review pool settings in `internal/db/pool.go:32-36`:
+        
+        ```go
+        poolConfig.MaxConns = 15              // Adjust for load
+        poolConfig.MinConns = 2
+        poolConfig.MaxConnLifetime = 30 * time.Minute
+        poolConfig.MaxConnIdleTime = 5 * time.Minute
+        poolConfig.HealthCheckPeriod = 1 * time.Minute
+        ```
+        
+        <Note>
+          Default values work for most applications. Increase `MaxConns` for high-traffic scenarios.
+        </Note>
+      </Step>
+
+      <Step title="Migrations are applied">
+        ```bash
+        make migrate-up
+        # or
+        migrate -path migrations -database $DATABASE_URL up
+        ```
+        
+        Ensure database schema is up-to-date before deployment.
+      </Step>
+
+      <Step title="Database credentials are secured">
+        - Use secrets management (AWS Secrets Manager, HashiCorp Vault, Kubernetes Secrets)
+        - Never commit credentials to version control
+        - Rotate passwords regularly
+        - Use least-privilege database users
+      </Step>
+
+      <Step title="Backups are configured">
+        - Automated daily backups
+        - Point-in-time recovery enabled
+        - Backup retention policy defined
+        - Regular restore testing
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Redis configuration">
+    <Steps>
+      <Step title="Persistence is enabled">
+        ```bash
+        # In docker-compose.yml
+        redis:
+          command: redis-server --appendonly yes
+        ```
+        
+        AOF (Append-Only File) ensures task queue durability.
+      </Step>
+
+      <Step title="Memory policy is configured">
+        ```bash
+        redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+        ```
+        
+        Prevent out-of-memory errors with appropriate policies.
+      </Step>
+
+      <Step title="Redis is monitored">
+        - Memory usage
+        - Connection count
+        - Command statistics
+        - Persistence status
+      </Step>
+    </Steps>
+  </Accordion>
+</AccordionGroup>
+
+## Security
+
+<AccordionGroup>
+  <Accordion title="Network security">
+    <Steps>
+      <Step title="Services are not publicly exposed">
+        Only expose the API server. Keep database and Redis on private networks.
+        
+        ```yaml
+        # docker-compose.yml - Remove port mappings in production
+        postgres:
+          # ports:  # Don't expose to host
+          #   - "5432:5432"
+        ```
+      </Step>
+
+      <Step title="TLS is configured">
+        - Use HTTPS for API endpoints
+        - Configure TLS certificates
+        - Use reverse proxy (Nginx, Traefik) for SSL termination
+        - Enable HSTS headers
+      </Step>
+
+      <Step title="Firewall rules are configured">
+        - Restrict database access to application servers only
+        - Restrict Redis access to application servers only
+        - Use security groups/network policies
+        - Enable VPC/private networking
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Application security">
+    <Steps>
+      <Step title="Request limits are enforced">
+        Built-in security from `cmd/api/main.go:90-97`:
+        
+        ```go
+        server := &http.Server{
+            ReadTimeout:    10 * time.Second,
+            WriteTimeout:   10 * time.Second,
+            IdleTimeout:    60 * time.Second,
+            MaxHeaderBytes: 1 << 20, // 1MB
+        }
+        ```
+        
+        These prevent resource exhaustion attacks.
+      </Step>
+
+      <Step title="CORS is properly configured">
+        Review CORS settings in your handler setup:
+        
+        ```go
+        // Configure for your specific origins
+        e.Use(middleware.CORS())
+        ```
+        
+        Don't use wildcard (`*`) in production.
+      </Step>
+
+      <Step title="Panic recovery is enabled">
+        Built-in panic recovery middleware prevents crashes.
+        
+        <Note>
+          Echo's default recovery middleware is production-ready and handles panics gracefully.
+        </Note>
+      </Step>
+
+      <Step title="Input validation is implemented">
+        - Validate all user inputs
+        - Sanitize data before database queries
+        - Use parameterized queries (sqlc provides this)
+        - Implement rate limiting
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Secrets management">
+    <Steps>
+      <Step title="Environment variables are secured">
+        - Never commit `.env` files
+        - Use secrets management services
+        - Inject secrets at runtime
+        - Rotate credentials regularly
+      </Step>
+
+      <Step title="Sensitive data is encrypted">
+        - Encrypt data at rest
+        - Encrypt data in transit
+        - Use appropriate encryption algorithms
+        - Manage encryption keys securely
+      </Step>
+    </Steps>
+  </Accordion>
+</AccordionGroup>
+
+## Reliability
+
+<AccordionGroup>
+  <Accordion title="Graceful shutdown">
+    <Steps>
+      <Step title="API server shutdown is configured">
+        Built-in graceful shutdown in `cmd/api/main.go:110-131`:
+        
+        ```go
+        sigChan := make(chan os.Signal, 1)
+        signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+        
+        select {
+        case sig := <-sigChan:
+            logg.Info().Str("signal", sig.String()).Msg("shutdown signal received")
+        }
+        
+        shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.APIShutdownTimeout)
+        defer cancel()
+        
+        if err := server.Shutdown(shutdownCtx); err != nil {
+            logg.Error().Err(err).Msg("server shutdown failed")
+        }
+        ```
+        
+        Handles SIGTERM and SIGINT signals gracefully.
+      </Step>
+
+      <Step title="Worker shutdown is configured">
+        Built-in graceful shutdown in `cmd/worker/main.go:143-178`:
+        
+        ```go
+        srv.Stop()  // Stop accepting new tasks
+        
+        shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.WorkerShutdownTimeout)
+        defer cancel()
+        
+        done := make(chan struct{})
+        go func() {
+            srv.Shutdown()  // Wait for in-flight tasks
+            close(done)
+        }()
+        
+        select {
+        case <-done:
+            logg.Info().Msg("worker shutdown completed gracefully")
+        case <-shutdownCtx.Done():
+            logg.Warn().Msg("worker shutdown timed out, forcing exit")
+        }
+        ```
+        
+        Allows in-flight tasks to complete before shutdown.
+      </Step>
+
+      <Step title="Shutdown timeouts are appropriate">
+        ```bash
+        API_SHUTDOWN_TIMEOUT=30s      # Time for requests to complete
+        WORKER_SHUTDOWN_TIMEOUT=60s   # Time for tasks to complete
+        ```
+        
+        <Warning>
+          Set timeouts longer than your longest expected request/task duration.
+        </Warning>
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Health checks">
+    <Steps>
+      <Step title="Health endpoint is accessible">
+        ```bash
+        curl http://localhost:8080/health
+        ```
+        
+        Returns database and Redis status with response time.
+      </Step>
+
+      <Step title="Load balancer health checks configured">
+        ```yaml
+        # Example: Kubernetes liveness probe
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        ```
+        
+        <Note>
+          The `/health` endpoint is lightweight and safe for frequent polling - it does not enqueue background jobs.
+        </Note>
+      </Step>
+
+      <Step title="Database health is monitored">
+        Built-in connection pool health checks:
+        
+        ```go
+        poolConfig.HealthCheckPeriod = 1 * time.Minute
+        ```
+        
+        From `internal/db/pool.go:36`.
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Error handling">
+    <Steps>
+      <Step title="Errors are logged properly">
+        Built-in error handling in `cmd/worker/main.go:93-103`:
+        
+        ```go
+        ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
+            logg.Error().
+                Err(err).
+                Str("task_type", task.Type()).
+                Str("task_id", taskID).
+                Msg("task processing failed")
+        })
+        ```
+        
+        All errors are captured with context.
+      </Step>
+
+      <Step title="Retry strategy is configured">
+        Built-in exponential backoff in `cmd/worker/main.go:88-91`:
+        
+        ```go
+        RetryDelayFunc: func(n int, e error, t *asynq.Task) time.Duration {
+            // 1s, 2s, 4s, 8s, 16s...
+            return time.Duration(1<<uint(n)) * time.Second
+        }
+        ```
+        
+        Failed tasks are automatically retried with increasing delays.
+      </Step>
+
+      <Step title="Resource cleanup is guaranteed">
+        ```go
+        defer db.Close()
+        defer rdb.Close()
+        defer schedulerClient.Close()
+        ```
+        
+        Resources are cleaned up even if errors occur.
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Worker configuration">
+    <Steps>
+      <Step title="Concurrency is tuned">
+        ```go
+        // In cmd/worker/main.go:82
+        asynq.Config{
+            Concurrency: 10,  // Adjust based on workload
+        }
+        ```
+        
+        Balance between throughput and resource usage.
+      </Step>
+
+      <Step title="Queue priorities are configured">
+        ```go
+        // In cmd/worker/main.go:84
+        Queues: queue.Priorities(),  // critical:6, default:3, low:1
+        ```
+        
+        Defined in `internal/queue` package.
+      </Step>
+
+      <Step title="Worker status is verified">
+        ```bash
+        # Check worker connectivity
+        curl http://localhost:8080/worker/status
+        
+        # Test task processing
+        curl -X POST http://localhost:8080/worker/ping
+        ```
+        
+        Verify worker is processing tasks before deploying.
+      </Step>
+    </Steps>
+  </Accordion>
+</AccordionGroup>
+
+## Monitoring and logging
+
+<AccordionGroup>
+  <Accordion title="Structured logging">
+    <Steps>
+      <Step title="Logs are in JSON format">
+        Built-in structured logging with zerolog:
+        
+        ```json
+        {
+          "level": "info",
+          "request_id": "abc123",
+          "method": "GET",
+          "path": "/health",
+          "duration": 12,
+          "status": 200,
+          "message": "request completed"
+        }
+        ```
+      </Step>
+
+      <Step title="Request IDs are tracked">
+        Built-in request correlation in `internal/middleware/logger.go:18-28`:
+        
+        ```go
+        reqID := c.Request().Header.Get("X-Request-ID")
+        if reqID == "" {
+            reqID = uuid.NewString()
+        }
+        
+        c.Response().Header().Set("X-Request-ID", reqID)
+        ```
+        
+        Every request has a unique ID for tracing.
+      </Step>
+
+      <Step title="Request IDs propagate to workers">
+        Worker tasks include the original request ID for end-to-end tracing.
+        
+        See `cmd/worker/main.go:123-125` for correlation logging.
+      </Step>
+
+      <Step title="Log aggregation is configured">
+        - Send logs to centralized system (ELK, Splunk, Datadog)
+        - Configure log retention policies
+        - Set up log-based alerts
+        - Enable log searching and filtering
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Metrics and monitoring">
+    <Steps>
+      <Step title="Application metrics are collected">
+        Monitor:
+        - Request rate and duration
+        - Error rate and types
+        - Database query performance
+        - Worker task processing rate
+        - Queue depth
+      </Step>
+
+      <Step title="Infrastructure metrics are collected">
+        Monitor:
+        - CPU usage
+        - Memory usage
+        - Disk I/O
+        - Network I/O
+        - Connection counts
+      </Step>
+
+      <Step title="Database metrics are monitored">
+        Monitor:
+        - Connection pool usage
+        - Query duration
+        - Lock waits
+        - Table sizes
+        - Replication lag (if applicable)
+      </Step>
+
+      <Step title="Redis metrics are monitored">
+        Monitor:
+        - Memory usage
+        - Key count
+        - Command rate
+        - Queue sizes
+        - Persistence status
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Alerting">
+    <Steps>
+      <Step title="Critical alerts are configured">
+        - Service down
+        - Database connection failures
+        - Redis connection failures
+        - High error rates
+        - Resource exhaustion
+      </Step>
+
+      <Step title="Performance alerts are configured">
+        - Slow response times
+        - High CPU/memory usage
+        - Database connection pool exhaustion
+        - Queue backlog growth
+        - Disk space low
+      </Step>
+
+      <Step title="Alert notification channels are set up">
+        - Email notifications
+        - Slack/Teams integration
+        - PagerDuty for critical issues
+        - On-call rotation defined
+      </Step>
+    </Steps>
+  </Accordion>
+</AccordionGroup>
+
+## Performance
+
+<AccordionGroup>
+  <Accordion title="Database optimization">
+    <Steps>
+      <Step title="Indexes are created">
+        - Index frequently queried columns
+        - Index foreign keys
+        - Use composite indexes where appropriate
+        - Monitor index usage
+      </Step>
+
+      <Step title="Queries are optimized">
+        - Use EXPLAIN ANALYZE for slow queries
+        - Avoid N+1 queries
+        - Use connection pooling (built-in)
+        - Implement query timeouts
+      </Step>
+
+      <Step title="Connection pool is monitored">
+        ```go
+        // Monitor pool stats
+        stats := db.Get().Stat()
+        // Check: AcquireCount, AcquireDuration, AcquiredConns, IdleConns
+        ```
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Application optimization">
+    <Steps>
+      <Step title="Thread safety is verified">
+        Built-in thread-safe components:
+        
+        - Database pool uses `sync.RWMutex` (`internal/db/pool.go:15`)
+        - Config loading uses `sync.Once` (`internal/config/config.go:43`)
+        - All shared resources are properly synchronized
+      </Step>
+
+      <Step title="Resource limits are configured">
+        ```go
+        // HTTP server limits (cmd/api/main.go:90-97)
+        ReadTimeout:    10 * time.Second,
+        WriteTimeout:   10 * time.Second,
+        IdleTimeout:    60 * time.Second,
+        MaxHeaderBytes: 1 << 20,  // 1MB
+        ```
+      </Step>
+
+      <Step title="Worker concurrency is optimized">
+        ```go
+        // Adjust based on workload and available resources
+        Concurrency: 10,  // cmd/worker/main.go:82
+        ```
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Caching strategy">
+    <Steps>
+      <Step title="Redis caching is implemented">
+        - Cache frequently accessed data
+        - Set appropriate TTLs
+        - Implement cache invalidation
+        - Monitor cache hit rates
+      </Step>
+
+      <Step title="Cache policies are defined">
+        - What to cache
+        - Cache duration
+        - Cache eviction strategy
+        - Cache warming strategy
+      </Step>
+    </Steps>
+  </Accordion>
+</AccordionGroup>
+
+## Deployment
+
+<AccordionGroup>
+  <Accordion title="Deployment process">
+    <Steps>
+      <Step title="Zero-downtime deployment is configured">
+        - Rolling updates
+        - Blue-green deployment
+        - Canary releases
+        - Graceful shutdown ensures no dropped requests
+      </Step>
+
+      <Step title="Rollback plan is defined">
+        - Quick rollback procedure
+        - Database migration rollback strategy
+        - Configuration rollback
+        - Automated rollback triggers
+      </Step>
+
+      <Step title="Health checks prevent bad deployments">
+        - Pre-deployment health checks
+        - Post-deployment verification
+        - Automated rollback on health check failures
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Infrastructure as code">
+    <Steps>
+      <Step title="Infrastructure is version controlled">
+        - Terraform/CloudFormation templates
+        - Kubernetes manifests
+        - Docker Compose files
+        - CI/CD pipeline configuration
+      </Step>
+
+      <Step title="Configuration is managed">
+        - Environment-specific configs
+        - Secrets management
+        - Feature flags
+        - Configuration validation
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Documentation">
+    <Steps>
+      <Step title="Deployment process is documented">
+        - Step-by-step deployment guide
+        - Environment setup instructions
+        - Troubleshooting guide
+        - Runbook for common issues
+      </Step>
+
+      <Step title="Architecture is documented">
+        - System architecture diagram
+        - Component interactions
+        - Data flow documentation
+        - API documentation
+      </Step>
+    </Steps>
+  </Accordion>
+</AccordionGroup>
+
+## Built-in production features
+
+Boiler-Go includes these production-ready features out of the box:
+
+<CardGroup cols={2}>
+  <Card title="Thread-safe database pool" icon="lock">
+    Concurrent-safe PostgreSQL connection management with `sync.RWMutex`.
+    
+    See `internal/db/pool.go:14-15`
+  </Card>
+
+  <Card title="Graceful shutdown" icon="power-off">
+    Proper resource cleanup and timeout handling for both API and worker.
+    
+    See `cmd/api/main.go:110-138` and `cmd/worker/main.go:143-178`
+  </Card>
+
+  <Card title="Structured logging" icon="file-lines">
+    JSON logging with request tracing and correlation IDs.
+    
+    See `internal/middleware/logger.go`
+  </Card>
+
+  <Card title="Configuration validation" icon="check">
+    Fail-fast validation with descriptive error messages.
+    
+    See `internal/config/config.go:60-92`
+  </Card>
+
+  <Card title="Security hardened" icon="shield">
+    Request size limits, timeouts, and panic recovery.
+    
+    See `cmd/api/main.go:90-97`
+  </Card>
+
+  <Card title="Background jobs" icon="clock">
+    Redis-based task processing with retry logic and exponential backoff.
+    
+    See `cmd/worker/main.go:79-104`
+  </Card>
+
+  <Card title="Health monitoring" icon="heart-pulse">
+    Lightweight service health monitoring with duration tracking.
+    
+    Endpoint: `GET /health`
+  </Card>
+
+  <Card title="Worker management" icon="gears">
+    API endpoints for worker status and ping testing.
+    
+    Endpoints: `GET /worker/status`, `POST /worker/ping`
+  </Card>
+</CardGroup>
+
+## Pre-deployment verification
+
+Run through this final checklist before going live:
+
+<Steps>
+  <Step title="Configuration review">
+    - [ ] All environment variables set
+    - [ ] SSL enabled for database
+    - [ ] Redis password configured
+    - [ ] Timeouts appropriate for production
+    - [ ] Logging configured correctly
+  </Step>
+
+  <Step title="Security review">
+    - [ ] Database credentials secured
+    - [ ] Services not publicly exposed
+    - [ ] TLS configured
+    - [ ] Firewall rules in place
+    - [ ] Input validation implemented
+  </Step>
+
+  <Step title="Reliability verification">
+    - [ ] Health endpoint accessible
+    - [ ] Graceful shutdown tested
+    - [ ] Worker processing verified
+    - [ ] Database migrations applied
+    - [ ] Backups configured
+  </Step>
+
+  <Step title="Monitoring setup">
+    - [ ] Logs aggregated
+    - [ ] Metrics collected
+    - [ ] Alerts configured
+    - [ ] Dashboards created
+    - [ ] On-call rotation defined
+  </Step>
+
+  <Step title="Performance validation">
+    - [ ] Load testing completed
+    - [ ] Database indexes created
+    - [ ] Connection pools tuned
+    - [ ] Worker concurrency optimized
+    - [ ] Cache strategy implemented
+  </Step>
+
+  <Step title="Deployment readiness">
+    - [ ] Rollback plan defined
+    - [ ] Zero-downtime deployment configured
+    - [ ] Documentation complete
+    - [ ] Team trained
+    - [ ] Runbook prepared
+  </Step>
+</Steps>
+
+## Additional resources
+
+<CardGroup cols={2}>
+  <Card title="Docker deployment" href="/deployment/docker" icon="docker">
+    Container configuration and best practices
+  </Card>
+
+  <Card title="Environment variables" href="/deployment/environment-variables" icon="gear">
+    Complete configuration reference
+  </Card>
+
+  <Card title="Architecture" href="/getting-started/architecture" icon="sitemap">
+    System design and component overview
+  </Card>
+
+  <Card title="Health checks" href="/api-reference/health" icon="heart-pulse">
+    Monitoring endpoints documentation
+  </Card>
+</CardGroup>

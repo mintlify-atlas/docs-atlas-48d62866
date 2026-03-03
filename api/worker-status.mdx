@@ -1,0 +1,50 @@
+---
+title: Worker status
+description: Get the current status of the worker and available queues
+---
+
+The worker status endpoint provides information about the scheduler connection and available task queues.
+
+## Endpoint
+
+```
+GET /worker/status
+```
+
+**Authentication:** None required
+
+## Response
+
+Returns HTTP 200 with worker and queue information.
+
+<ResponseField name="scheduler" type="string" required>
+  Connection status of the task scheduler - returns "connected" when operational
+</ResponseField>
+
+<ResponseField name="queues" type="array" required>
+  List of available queue names for task processing
+</ResponseField>
+
+<ResponseField name="note" type="string" required>
+  Additional information about testing worker functionality
+</ResponseField>
+
+## Response example
+
+```json 200
+{
+  "scheduler": "connected",
+  "queues": [
+    "default",
+    "critical",
+    "low"
+  ],
+  "note": "Use POST /worker/ping to test task processing"
+}
+```
+
+## Example request
+
+```bash
+curl -X GET http://localhost:8080/worker/status
+```

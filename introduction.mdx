@@ -1,0 +1,134 @@
+---
+title: Introduction
+description: A production-ready Go backend boilerplate with clean architecture, PostgreSQL, Redis, and background job processing
+---
+
+## Welcome to Boiler-Go
+
+Boiler-Go is a production-ready Go backend boilerplate that provides a solid foundation for building scalable web services. It combines clean architecture principles with battle-tested libraries and production-ready patterns.
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Get your backend running in under 5 minutes
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand the project structure and design patterns
+  </Card>
+  <Card title="API endpoints" icon="code" href="/api/health">
+    Explore the available HTTP endpoints
+  </Card>
+  <Card title="Configuration" icon="gear" href="/concepts/configuration">
+    Learn how to configure your application
+  </Card>
+</CardGroup>
+
+## Key features
+
+Boiler-Go comes packed with production-ready features out of the box:
+
+<CardGroup cols={2}>
+  <Card title="Thread-safe database pool" icon="database">
+    Concurrent-safe PostgreSQL connection management with pgx/v5
+  </Card>
+  <Card title="Background jobs" icon="list-check">
+    Redis-based task processing with Asynq for reliable job execution
+  </Card>
+  <Card title="Graceful shutdown" icon="power-off">
+    Proper resource cleanup and timeout handling for both API and worker
+  </Card>
+  <Card title="Structured logging" icon="file-lines">
+    JSON logging with request tracing and correlation IDs using zerolog
+  </Card>
+  <Card title="Health checks" icon="heart-pulse">
+    Lightweight service health monitoring with duration tracking
+  </Card>
+  <Card title="Worker management" icon="server">
+    API endpoints for worker status and ping testing
+  </Card>
+</CardGroup>
+
+## Tech stack
+
+Boiler-Go is built on modern, production-tested libraries:
+
+### Core backend
+
+- **[Echo v4](https://echo.labstack.com/)** - High performance HTTP router and middleware framework
+- **[pgx/v5](https://github.com/jackc/pgx)** - Fast PostgreSQL driver and toolkit
+- **[sqlc](https://sqlc.dev/)** - Type-safe SQL code generation
+
+### Background jobs and caching
+
+- **[Asynq](https://github.com/hibiken/asynq)** - Redis-based distributed task queue
+- **[go-redis/v9](https://github.com/redis/go-redis)** - Type-safe Redis client
+
+### Configuration and logging
+
+- **[env/v11](https://github.com/caarlos0/env)** - Environment variable parsing with validation
+- **[zerolog](https://github.com/rs/zerolog)** - Zero-allocation JSON logger
+
+## Production ready
+
+Boiler-Go includes several production-ready features that are often overlooked in boilerplates:
+
+<AccordionGroup>
+  <Accordion title="Thread safety">
+    - Database pool uses `sync.RWMutex` for concurrent access
+    - Configuration loading uses `sync.Once` for safe singleton pattern
+    - All shared resources are properly synchronized
+  </Accordion>
+  
+  <Accordion title="Observability">
+    - Structured JSON logging throughout the application
+    - Request correlation via `X-Request-ID` header
+    - Request IDs propagated from API to worker logs
+    - Global fallback logger for non-request contexts
+  </Accordion>
+  
+  <Accordion title="Error handling">
+    - Comprehensive error checking and logging
+    - Graceful degradation on service failures
+    - Proper resource cleanup on errors
+    - Context-aware timeouts
+  </Accordion>
+  
+  <Accordion title="Resource management">
+    - Connection pooling with configurable limits
+    - Context-aware database initialization with timeouts
+    - Automatic cleanup on shutdown
+    - Memory leak prevention
+  </Accordion>
+</AccordionGroup>
+
+## What you'll build
+
+With Boiler-Go, you get a complete backend system:
+
+1. **HTTP API server** - Handles incoming requests with structured logging and middleware
+2. **Background worker** - Processes asynchronous tasks from Redis queues
+3. **Health monitoring** - Exposes health check endpoints for load balancers
+4. **Worker management** - Test and monitor your background job processing
+
+<Note>
+  Both the API server and worker process share the same codebase and configuration, making deployment and maintenance straightforward.
+</Note>
+
+## Next steps
+
+<Steps>
+  <Step title="Get started">
+    Follow the [quickstart guide](/quickstart) to set up your development environment and run your first API server
+  </Step>
+  
+  <Step title="Understand the architecture">
+    Learn about the [project structure](/architecture) and design patterns used throughout the codebase
+  </Step>
+  
+  <Step title="Explore the API">
+    Check out the [API reference](/api/health) to see what endpoints are available
+  </Step>
+  
+  <Step title="Customize">
+    Adapt the boilerplate to your needs by adding new handlers, tasks, and business logic
+  </Step>
+</Steps>

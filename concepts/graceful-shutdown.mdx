@@ -1,0 +1,408 @@
+---
+title: Graceful shutdown
+description: Learn how Boiler-Go implements graceful shutdown for both API and worker processes to prevent data loss and ensure clean termination
+---
+
+Boiler-Go implements graceful shutdown for both the API server and worker to ensure:
+
+- In-flight requests complete successfully
+- Background tasks finish processing
+- Database connections close cleanly
+- No data loss or corruption occurs
+
+## Signal handling
+
+Both the API and worker listen for OS signals to trigger graceful shutdown:
+
+```go
+// Setup signal handling
+sigChan := make(chan os.Signal, 1)
+signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+select {
+case err := <-serverErrors:
+    logg.Fatal().Err(err).Msg("startup failed")
+case sig := <-sigChan:
+    logg.Info().Str("signal", sig.String()).Msg("shutdown signal received")
+}
+```
+
+<Note>
+  The application listens for `SIGINT` (Ctrl+C) and `SIGTERM` (container orchestrator termination) signals.
+</Note>
+
+## API server shutdown
+
+The API server implements graceful shutdown in `cmd/api/main.go:110-138`:
+
+```go
+// Setup signal handling
+sigChan := make(chan os.Signal, 1)
+signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+select {
+case err := <-serverErrors:
+    logg.Fatal().Err(err).Msg("server startup failed")
+case sig := <-sigChan:
+    logg.Info().Str("signal", sig.String()).Msg("shutdown signal received")
+}
+
+logg.Info().Msg("shutting down server...")
+
+// Graceful shutdown with timeout
+shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.APIShutdownTimeout)
+defer cancel()
+
+if err := server.Shutdown(shutdownCtx); err != nil {
+    logg.Error().Err(err).Msg("server shutdown failed")
+} else {
+    logg.Info().Msg("server shutdown completed gracefully")
+}
+
+// Close resources in reverse order of initialization
+if err := rdb.Close(); err != nil {
+    logg.Error().Err(err).Msg("redis close failed")
+}
+
+logg.Info().Msg("server stopped cleanly")
+```
+
+<Steps>
+  <Step title="Receive signal">
+    The application receives `SIGINT` or `SIGTERM` from the OS
+  </Step>
+  
+  <Step title="Stop accepting connections">
+    The HTTP server stops accepting new connections
+  </Step>
+  
+  <Step title="Wait for requests">
+    In-flight HTTP requests are given `API_SHUTDOWN_TIMEOUT` to complete
+  </Step>
+  
+  <Step title="Close resources">
+    Database pool, Redis client, and other resources are closed in reverse order
+  </Step>
+  
+  <Step title="Exit cleanly">
+    The application exits with status code 0
+  </Step>
+</Steps>
+
+### Shutdown timeout
+
+The API server uses `API_SHUTDOWN_TIMEOUT` (default: 10s) to wait for in-flight requests:
+
+```go
+shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.APIShutdownTimeout)
+defer cancel()
+
+if err := server.Shutdown(shutdownCtx); err != nil {
+    logg.Error().Err(err).Msg("server shutdown failed")
+}
+```
+
+<Accordion title="What happens when timeout is exceeded?">
+  If requests don't complete within the timeout:
+  
+  1. `server.Shutdown()` returns a context deadline exceeded error
+  2. The error is logged but the application continues shutting down
+  3. Active connections are forcefully closed
+  4. Resources are still cleaned up properly
+  
+  <Warning>
+    Set `API_SHUTDOWN_TIMEOUT` higher than your longest request duration to avoid force-closing connections.
+  </Warning>
+</Accordion>
+
+## Worker shutdown
+
+The worker implements a two-phase graceful shutdown in `cmd/worker/main.go:143-178`:
+
+```go
+// Setup signal handling
+sigChan := make(chan os.Signal, 1)
+signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+select {
+case err := <-workerErrors:
+    logg.Fatal().Err(err).Msg("worker startup failed")
+case sig := <-sigChan:
+    logg.Info().Str("signal", sig.String()).Msg("shutdown signal received")
+}
+
+logg.Info().Msg("shutting down worker...")
+
+// Phase 1: Stop accepting new tasks
+srv.Stop()
+logg.Info().Msg("worker stopped accepting new tasks")
+
+// Phase 2: Shutdown with timeout enforcement for in-flight tasks
+shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.WorkerShutdownTimeout)
+defer cancel()
+
+// Run srv.Shutdown() in a goroutine since it blocks until all in-flight tasks complete
+done := make(chan struct{})
+go func() {
+    srv.Shutdown()
+    close(done)
+}()
+
+select {
+case <-done:
+    logg.Info().Msg("worker shutdown completed gracefully")
+case <-shutdownCtx.Done():
+    logg.Warn().Msg("worker shutdown timed out, forcing exit")
+}
+
+logg.Info().Msg("worker stopped cleanly")
+```
+
+<Steps>
+  <Step title="Receive signal">
+    The worker receives `SIGINT` or `SIGTERM` from the OS
+  </Step>
+  
+  <Step title="Stop accepting tasks">
+    `srv.Stop()` prevents the worker from pulling new tasks from Redis
+  </Step>
+  
+  <Step title="Wait for tasks">
+    In-flight tasks are given `WORKER_SHUTDOWN_TIMEOUT` to complete
+  </Step>
+  
+  <Step title="Enforce timeout">
+    If tasks don't complete in time, the worker forcefully exits
+  </Step>
+  
+  <Step title="Clean exit">
+    The application exits with status code 0
+  </Step>
+</Steps>
+
+### Two-phase shutdown
+
+The worker uses a two-phase approach to ensure clean shutdown:
+
+<Tabs>
+  <Tab title="Phase 1: Stop accepting">
+    ```go
+    // Stop accepting new tasks from Redis
+    srv.Stop()
+    logg.Info().Msg("worker stopped accepting new tasks")
+    ```
+    
+    The worker immediately stops pulling new tasks from the queue.
+  </Tab>
+  
+  <Tab title="Phase 2: Wait for completion">
+    ```go
+    // Wait for in-flight tasks with timeout
+    done := make(chan struct{})
+    go func() {
+        srv.Shutdown() // Blocks until all tasks complete
+        close(done)
+    }()
+    
+    select {
+    case <-done:
+        logg.Info().Msg("worker shutdown completed gracefully")
+    case <-shutdownCtx.Done():
+        logg.Warn().Msg("worker shutdown timed out, forcing exit")
+    }
+    ```
+    
+    The worker waits up to `WORKER_SHUTDOWN_TIMEOUT` for tasks to complete.
+  </Tab>
+</Tabs>
+
+<Note>
+  The timeout is enforced by running `srv.Shutdown()` in a goroutine and using a `select` statement to race between task completion and context timeout.
+</Note>
+
+### Worker timeout
+
+The worker uses `WORKER_SHUTDOWN_TIMEOUT` (default: 30s) to wait for in-flight tasks:
+
+```bash
+WORKER_SHUTDOWN_TIMEOUT=30s
+```
+
+<Warning>
+  Set this timeout **higher than your longest-running task duration**. If tasks are still running when the timeout expires, they will be terminated forcefully.
+</Warning>
+
+## Resource cleanup
+
+Both processes clean up resources in reverse order of initialization:
+
+<CodeGroup>
+  ```go API server
+  // cmd/api/main.go:66,86,133-136
+  defer db.Close()           // Close database pool
+  defer schedulerClient.Close()  // Close scheduler client
+  
+  // Close Redis
+  if err := rdb.Close(); err != nil {
+      logg.Error().Err(err).Msg("redis close failed")
+  }
+  ```
+  
+  ```go Worker
+  // cmd/worker/main.go:71
+  defer db.Close()  // Close database pool
+  ```
+</CodeGroup>
+
+<Tip>
+  Using `defer` immediately after initialization ensures resources are cleaned up even if the application panics.
+</Tip>
+
+## Health check timeout
+
+During startup, both processes use `HEALTH_CHECK_TIMEOUT` for dependency checks:
+
+```go
+// Initialize database pool with timeout context
+dbCtx, dbCancel := context.WithTimeout(ctx, 10*time.Second)
+defer dbCancel()
+
+if err := db.Open(dbCtx, cfg); err != nil {
+    logg.Fatal().Err(err).Msg("failed to initialize database")
+}
+```
+
+## Container orchestration
+
+Boiler-Go's graceful shutdown works seamlessly with container orchestrators:
+
+<Accordion title="Kubernetes example">
+  ```yaml
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: boiler-go-api
+  spec:
+    template:
+      spec:
+        containers:
+        - name: api
+          image: boiler-go:latest
+          env:
+          - name: API_SHUTDOWN_TIMEOUT
+            value: "30s"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+        terminationGracePeriodSeconds: 60
+  ```
+  
+  <Steps>
+    <Step title="Kubernetes sends SIGTERM">
+      When scaling down or updating, Kubernetes sends `SIGTERM` to the pod
+    </Step>
+    
+    <Step title="Application starts shutdown">
+      Boiler-Go receives the signal and begins graceful shutdown
+    </Step>
+    
+    <Step title="Grace period expires">
+      After `terminationGracePeriodSeconds`, Kubernetes sends `SIGKILL`
+    </Step>
+  </Steps>
+  
+  <Warning>
+    Set `terminationGracePeriodSeconds` **higher than your shutdown timeout** to prevent force-killing the process.
+  </Warning>
+</Accordion>
+
+## Testing graceful shutdown
+
+### Local testing
+
+<CodeGroup>
+  ```bash Test API shutdown
+  # Start the API server
+  ./bin/api
+  
+  # In another terminal, send SIGTERM
+  pkill -TERM api
+  
+  # Or use Ctrl+C for SIGINT
+  ```
+  
+  ```bash Test worker shutdown
+  # Start a long-running task
+  curl -X POST http://localhost:8080/api/worker/ping
+  
+  # Immediately send SIGTERM
+  pkill -TERM worker
+  
+  # Watch logs to verify task completes
+  ```
+</CodeGroup>
+
+### Expected log output
+
+<Tabs>
+  <Tab title="API server">
+    ```
+    2024-03-15 14:23:45 INF server starting port=8080
+    2024-03-15 14:25:10 INF shutdown signal received signal=interrupt
+    2024-03-15 14:25:10 INF shutting down server...
+    2024-03-15 14:25:11 INF server shutdown completed gracefully
+    2024-03-15 14:25:11 INF server stopped cleanly
+    ```
+  </Tab>
+  
+  <Tab title="Worker">
+    ```
+    2024-03-15 14:23:50 INF worker starting
+    2024-03-15 14:25:15 INF shutdown signal received signal=interrupt
+    2024-03-15 14:25:15 INF shutting down worker...
+    2024-03-15 14:25:15 INF worker stopped accepting new tasks
+    2024-03-15 14:25:18 INF task completed task_type=worker:ping duration=3.2s
+    2024-03-15 14:25:18 INF worker shutdown completed gracefully
+    2024-03-15 14:25:18 INF worker stopped cleanly
+    ```
+  </Tab>
+</Tabs>
+
+## Best practices
+
+1. **Set appropriate timeouts**: Ensure shutdown timeouts are longer than your longest operation
+2. **Use deferred cleanup**: Always use `defer` for resource cleanup
+3. **Log shutdown events**: Log all shutdown phases for debugging
+4. **Test in production-like environments**: Verify graceful shutdown works with your orchestrator
+5. **Monitor shutdown duration**: Track how long shutdowns take and adjust timeouts accordingly
+
+<Tip>
+  Add metrics to track shutdown duration and detect when shutdowns approach timeout limits.
+</Tip>
+
+## Configuration reference
+
+<ParamField path="API_SHUTDOWN_TIMEOUT" type="duration" default="10s">
+  Maximum time to wait for in-flight HTTP requests to complete
+  
+  ```bash
+  API_SHUTDOWN_TIMEOUT=10s
+  ```
+</ParamField>
+
+<ParamField path="WORKER_SHUTDOWN_TIMEOUT" type="duration" default="30s">
+  Maximum time to wait for in-flight background tasks to complete
+  
+  ```bash
+  WORKER_SHUTDOWN_TIMEOUT=30s
+  ```
+</ParamField>
+
+<ParamField path="HEALTH_CHECK_TIMEOUT" type="duration" default="2s">
+  Timeout for dependency health checks during startup
+  
+  ```bash
+  HEALTH_CHECK_TIMEOUT=2s
+  ```
+</ParamField>

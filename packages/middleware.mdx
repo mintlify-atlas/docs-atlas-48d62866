@@ -1,0 +1,216 @@
+---
+title: Middleware
+description: HTTP middleware for request logging and context management
+---
+
+The `middleware` package provides custom Echo middleware for request logging, request ID management, and logger injection into request context.
+
+## Functions
+
+### RequestLogger
+
+Returns an Echo middleware that logs requests and injects a request-scoped logger with request_id into the context.
+
+```go
+func RequestLogger(base zerolog.Logger) echo.MiddlewareFunc
+```
+
+<ParamField path="base" type="zerolog.Logger">
+  Base logger to derive request-scoped loggers from
+</ParamField>
+
+**Returns:** `echo.MiddlewareFunc` - Echo middleware function
+
+**Behavior:**
+1. Extracts or generates request ID from `X-Request-ID` header
+2. Sets request ID on response header
+3. Creates request-scoped logger with request_id, method, and path
+4. Injects logger into Echo context (accessible via `c.Get("logger")`)
+5. Executes next handler
+6. Logs request completion with duration and status
+
+## Usage
+
+### Basic usage
+
+```go
+import (
+    "boiler-go/internal/middleware"
+    "boiler-go/pkg/logger"
+    "github.com/labstack/echo/v4"
+)
+
+func main() {
+    e := echo.New()
+    log := logger.New()
+    
+    // Add request logger middleware
+    e.Use(middleware.RequestLogger(log))
+    
+    // Define routes
+    e.GET("/users", getUsers)
+    
+    e.Start(":8080")
+}
+```
+
+### Example from router
+
+```go
+// From internal/handler/router.go
+func NewRouter(
+    log zerolog.Logger,
+    cfg *config.Config,
+    db *pgxpool.Pool,
+    redis *redis.Client,
+    scheduler *scheduler.Client,
+) http.Handler {
+    e := echo.New()
+    e.HideBanner = true
+    e.HidePort = true
+
+    e.Use(echomiddleware.Recover())
+    e.Use(echomiddleware.CORSWithConfig(echomiddleware.CORSConfig{
+        AllowOrigins:     []string{"*"},
+        AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
+        AllowHeaders:     []string{"Accept", "Authorization", "Content-Type", "X-Request-ID"},
+        ExposeHeaders:    []string{"Link", "X-Request-ID"},
+        AllowCredentials: false,
+        MaxAge:           300,
+    }))
+    
+    // Use custom request logger middleware
+    e.Use(middleware.RequestLogger(log))
+
+    health := NewHealthHandler(db, redis, cfg.HealthCheckTimeout)
+    e.GET("/health", health.Check)
+
+    return e
+}
+```
+
+### Accessing request-scoped logger in handlers
+
+```go
+import (
+    "boiler-go/pkg/logger"
+    "github.com/labstack/echo/v4"
+)
+
+func getUsers(c echo.Context) error {
+    // Extract request-scoped logger from context
+    log := logger.FromEchoContext(c)
+    
+    // Logger automatically includes request_id, method, and path
+    log.Info().Msg("fetching users")
+    
+    users, err := fetchUsers()
+    if err != nil {
+        log.Error().Err(err).Msg("failed to fetch users")
+        return c.JSON(500, map[string]string{"error": "internal error"})
+    }
+    
+    log.Info().Int("count", len(users)).Msg("users fetched successfully")
+    return c.JSON(200, users)
+}
+```
+
+### Request ID behavior
+
+```go
+// Client sends request with X-Request-ID header
+GET /api/users HTTP/1.1
+X-Request-ID: abc123
+
+// Middleware uses provided request ID
+// Logger output: {"level":"info","request_id":"abc123","method":"GET","path":"/api/users",...}
+```
+
+```go
+// Client sends request without X-Request-ID header
+GET /api/users HTTP/1.1
+
+// Middleware generates UUID request ID
+// Logger output: {"level":"info","request_id":"d290f1ee-6c54-4b01-90e6-d701748f0851","method":"GET","path":"/api/users",...}
+```
+
+### Request completion logging
+
+```go
+// After request completes, middleware logs:
+{
+  "level": "info",
+  "request_id": "abc123",
+  "method": "GET",
+  "path": "/api/users",
+  "duration": 45,
+  "status": 200,
+  "message": "request completed"
+}
+```
+
+## Integration with logger package
+
+The middleware works seamlessly with the logger package's `FromEchoContext` function:
+
+```go
+// middleware/logger.go - Sets logger in context
+reqLogger := base.With().
+    Str("request_id", reqID).
+    Str("method", c.Request().Method).
+    Str("path", c.Request().URL.Path).
+    Logger()
+c.Set("logger", reqLogger)
+
+// pkg/logger/logger.go - Extracts logger from context
+func FromEchoContext(c echo.Context) zerolog.Logger {
+    if l, ok := c.Get("logger").(zerolog.Logger); ok {
+        return l
+    }
+    return Global()
+}
+```
+
+## Middleware order
+
+For optimal behavior, apply middleware in this order:
+
+1. **Recover** - Panic recovery
+2. **CORS** - Cross-origin handling
+3. **RequestLogger** - Request logging and context injection
+4. **Custom middleware** - Your application-specific middleware
+
+```go
+e := echo.New()
+e.Use(echomiddleware.Recover())
+e.Use(echomiddleware.CORS())
+e.Use(middleware.RequestLogger(log))
+e.Use(customAuthMiddleware)
+```
+
+## Request ID propagation
+
+Request IDs are automatically propagated:
+
+1. **Incoming request** - Extract from `X-Request-ID` header or generate UUID
+2. **Response header** - Set `X-Request-ID` on response
+3. **Request header** - Set on request for downstream handlers
+4. **Logger context** - Inject into request-scoped logger
+5. **Task payload** - Include in background task payloads for correlation
+
+```go
+// From internal/handler/worker.go
+func (h *WorkerHandler) Ping(c echo.Context) error {
+    // Extract request ID for correlation
+    requestID := c.Request().Header.Get("X-Request-ID")
+
+    // Include in task payload
+    payload := PingTaskPayload{
+        Message:   "ping from API",
+        RequestID: requestID,  // Correlate task with original request
+        QueuedAt:  time.Now().UTC(),
+    }
+    
+    // ...
+}
+```

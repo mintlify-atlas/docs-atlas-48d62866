@@ -1,0 +1,162 @@
+---
+title: Running services
+description: Run the API server and background worker services in development
+---
+
+## Overview
+
+Boiler-Go consists of two main services:
+
+- **API Server**: Handles HTTP requests and serves the REST API
+- **Worker**: Processes background jobs using Asynq
+
+Both services can run independently and connect to the same PostgreSQL and Redis instances.
+
+## Prerequisites
+
+Before running the services, ensure you have:
+
+<Steps>
+  <Step title="Started development services">
+    PostgreSQL and Redis must be running:
+    
+    ```bash
+    make dev
+    ```
+  </Step>
+  
+  <Step title="Applied database migrations">
+    Your database schema must be up to date:
+    
+    ```bash
+    make migrate-up
+    ```
+  </Step>
+  
+  <Step title="Configured environment variables">
+    Your `.env` file should be properly configured. See [Development setup](/development/setup) for details.
+  </Step>
+</Steps>
+
+## Running the API server
+
+Start the API server using the Makefile command:
+
+```bash
+make api
+```
+
+This runs `go run ./cmd/api` and starts the HTTP server on the port specified in your `.env` file (default: 8080).
+
+### Verify the API is running
+
+Test the health check endpoint:
+
+```bash
+curl http://localhost:8080/health
+```
+
+You should receive a successful response indicating the API is running and database connectivity is working.
+
+### API logs
+
+The API server logs all requests and errors based on your `LOG_OUTPUT` configuration:
+
+- `stdout`: Logs appear in your terminal
+- `file`: Logs are written to the path specified in `LOG_FILE`
+- `both`: Logs appear in both terminal and file
+
+## Running the worker
+
+Start the background worker in a separate terminal:
+
+```bash
+make worker
+```
+
+This runs `go run ./cmd/worker` and starts processing jobs from the Redis queue.
+
+### Worker functionality
+
+The worker service:
+
+- Connects to Redis using the `REDIS_ADDR` configuration
+- Processes background jobs asynchronously
+- Handles retries and error logging
+- Supports graceful shutdown with `WORKER_SHUTDOWN_TIMEOUT`
+
+## Running both services simultaneously
+
+For a complete development environment, run both services in separate terminal windows:
+
+<CodeGroup>
+
+```bash Terminal 1 - API Server
+make api
+```
+
+```bash Terminal 2 - Worker
+make worker
+```
+
+</CodeGroup>
+
+Alternatively, you can use a process manager like [air](https://github.com/cosmtrek/air) for hot reloading during development.
+
+## Stopping services
+
+### Stop API or Worker
+
+Press `Ctrl+C` in the terminal where the service is running. The service will gracefully shut down, waiting for ongoing requests or jobs to complete within the configured timeout.
+
+### Stop development services
+
+To stop PostgreSQL and Redis:
+
+```bash
+make dev-down
+```
+
+This stops and removes the Docker containers but preserves data in Docker volumes.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Connection refused errors">
+    Ensure PostgreSQL and Redis are running:
+    
+    ```bash
+    docker ps
+    ```
+    
+    If containers aren't running, start them with `make dev`.
+  </Accordion>
+
+  <Accordion title="Port already in use">
+    If port 8080 is already in use, change the `APP_PORT` in your `.env` file:
+    
+    ```bash
+    APP_PORT=3000
+    ```
+  </Accordion>
+
+  <Accordion title="Database migration errors">
+    Ensure migrations are up to date:
+    
+    ```bash
+    make migrate-up
+    ```
+    
+    See [Database migrations](/development/database-migrations) for more details.
+  </Accordion>
+
+  <Accordion title="Environment variables not loaded">
+    Verify your `.env` file exists in the project root and contains all required variables from `.env.example`.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+- Learn about [Database migrations](/development/database-migrations)
+- Run the [Testing](/development/testing) suite
+- Deploy your application with the [Deployment guide](/deployment/docker)

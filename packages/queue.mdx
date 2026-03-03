@@ -1,0 +1,243 @@
+---
+title: Queue
+description: Shared queue configuration and priority management
+---
+
+The `queue` package defines shared queue names and priority configuration used across the codebase. It ensures consistency between worker configuration and task enqueueing.
+
+## Constants
+
+### Queue names
+
+```go
+const (
+    // QueueCritical is the highest priority queue.
+    QueueCritical = "critical"
+    // QueueDefault is the standard priority queue.
+    QueueDefault = "default"
+    // QueueLow is the lowest priority queue.
+    QueueLow = "low"
+)
+```
+
+<ParamField path="QueueCritical" type="string" default="critical">
+  Highest priority queue for urgent tasks
+</ParamField>
+
+<ParamField path="QueueDefault" type="string" default="default">
+  Standard priority queue for normal tasks
+</ParamField>
+
+<ParamField path="QueueLow" type="string" default="low">
+  Lowest priority queue for background tasks
+</ParamField>
+
+## Functions
+
+### Names
+
+Returns all queue names in priority order (highest to lowest).
+
+```go
+func Names() []string
+```
+
+**Returns:** `[]string` - Queue names: `["critical", "default", "low"]`
+
+### Priorities
+
+Returns the queue priority configuration map.
+
+```go
+func Priorities() map[string]int
+```
+
+**Returns:** `map[string]int` - Priority weights for each queue
+
+**Priority weights:**
+- **critical:** 6
+- **default:** 3
+- **low:** 1
+
+Higher values indicate higher priority. The worker processes queues proportionally based on these weights.
+
+## Usage
+
+### Enqueueing tasks to specific queues
+
+```go
+import (
+    "boiler-go/internal/queue"
+    "boiler-go/internal/scheduler"
+    "github.com/hibiken/asynq"
+)
+
+// High priority task
+err := client.Enqueue(
+    ctx,
+    "alert:send",
+    payload,
+    asynq.Queue(queue.QueueCritical),
+    asynq.MaxRetry(5),
+)
+
+// Normal priority task
+err := client.Enqueue(
+    ctx,
+    "email:send",
+    payload,
+    asynq.Queue(queue.QueueDefault),
+    asynq.MaxRetry(3),
+)
+
+// Low priority task
+err := client.Enqueue(
+    ctx,
+    "report:generate",
+    payload,
+    asynq.Queue(queue.QueueLow),
+    asynq.MaxRetry(1),
+)
+```
+
+### Example from worker handler
+
+```go
+// From internal/handler/worker.go
+func (h *WorkerHandler) Ping(c echo.Context) error {
+    // ...
+    
+    // Enqueue to default queue
+    taskID, err := h.scheduler.EnqueueWithID(
+        req.Context(),
+        tasks.TypeWorkerPing,
+        payloadBytes,
+        asynq.Queue(queue.QueueDefault),
+        asynq.MaxRetry(3),
+        asynq.Timeout(30*time.Second),
+    )
+    
+    // ...
+}
+```
+
+### Worker configuration
+
+```go
+// From cmd/worker/main.go
+import (
+    "boiler-go/internal/queue"
+    "github.com/hibiken/asynq"
+)
+
+func main() {
+    srv := asynq.NewServer(
+        redisOpt,
+        asynq.Config{
+            Concurrency: 10,
+            // Use shared queue priorities
+            Queues: queue.Priorities(),
+        },
+    )
+    
+    // Worker processes queues with weights:
+    // critical: 6, default: 3, low: 1
+    // For every 10 tasks, approximately:
+    // - 6 from critical queue
+    // - 3 from default queue
+    // - 1 from low queue
+}
+```
+
+### List all queues
+
+```go
+// Get all queue names
+queues := queue.Names()
+fmt.Println(queues) // ["critical", "default", "low"]
+
+// Return in API response
+func (h *WorkerHandler) Status(c echo.Context) error {
+    return c.JSON(http.StatusOK, map[string]any{
+        "scheduler": "connected",
+        "queues":    queue.Names(),
+    })
+}
+```
+
+### Get priority configuration
+
+```go
+// Get priority map
+priorities := queue.Priorities()
+fmt.Println(priorities)
+// Output: map[critical:6 default:3 low:1]
+
+// Use for monitoring
+for name, weight := range queue.Priorities() {
+    fmt.Printf("Queue %s has priority weight %d\n", name, weight)
+}
+```
+
+## Queue selection guidelines
+
+### Critical queue
+
+Use for tasks that must be processed immediately:
+- Security alerts
+- Payment processing
+- Real-time notifications
+- System health checks
+
+```go
+asynq.Queue(queue.QueueCritical)
+```
+
+### Default queue
+
+Use for standard application tasks:
+- User-facing operations
+- Email sending
+- Data synchronization
+- API callbacks
+
+```go
+asynq.Queue(queue.QueueDefault)
+```
+
+### Low queue
+
+Use for non-urgent background tasks:
+- Report generation
+- Data cleanup
+- Analytics processing
+- Cache warming
+
+```go
+asynq.Queue(queue.QueueLow)
+```
+
+## Strict priority mode
+
+For strict priority processing (always process higher priority queues first), enable strict mode in worker configuration:
+
+```go
+srv := asynq.NewServer(
+    redisOpt,
+    asynq.Config{
+        Concurrency: 10,
+        Queues:      queue.Priorities(),
+        StrictPriority: true, // Process critical before default, default before low
+    },
+)
+```
+
+**Note:** Strict priority can lead to starvation of low-priority queues if critical/default queues are always full.
+
+## Best practices
+
+1. **Use shared constants** - Always use `queue.QueueCritical`, `queue.QueueDefault`, `queue.QueueLow` instead of string literals
+2. **Consistent priorities** - Use `queue.Priorities()` in worker configuration to ensure consistency
+3. **Appropriate selection** - Choose queue based on task urgency and user impact
+4. **Monitor queue depths** - Track queue sizes to identify bottlenecks
+5. **Adjust concurrency** - Scale worker concurrency based on queue load

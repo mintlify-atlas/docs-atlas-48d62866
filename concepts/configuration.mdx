@@ -1,0 +1,410 @@
+---
+title: Configuration
+description: Learn how Boiler-Go manages application configuration using environment variables with validation and fail-fast behavior
+---
+
+Boiler-Go uses environment variables for configuration with strong validation and fail-fast error handling. Configuration is managed in `internal/config/config.go`.
+
+## Configuration structure
+
+All configuration is defined in the `Config` struct:
+
+```go
+type Config struct {
+    // Server
+    AppPort string `env:"APP_PORT" envDefault:"8080"`
+    
+    // Database
+    DatabaseURL string `env:"DATABASE_URL,required"`
+    
+    // Redis / Asynq
+    RedisAddr     string `env:"REDIS_ADDR,required"`
+    RedisPassword string `env:"REDIS_PASSWORD"`
+    RedisDB       int    `env:"REDIS_DB" envDefault:"0"`
+    
+    // Timeouts
+    HealthCheckTimeout    time.Duration `env:"HEALTH_CHECK_TIMEOUT" envDefault:"2s"`
+    APIShutdownTimeout    time.Duration `env:"API_SHUTDOWN_TIMEOUT" envDefault:"10s"`
+    WorkerShutdownTimeout time.Duration `env:"WORKER_SHUTDOWN_TIMEOUT" envDefault:"30s"`
+    
+    // Logging
+    LogOutput string `env:"LOG_OUTPUT" envDefault:"stdout"`
+    LogFile   string `env:"LOG_FILE"`
+}
+```
+
+<Note>
+  Fields tagged with `,required` must be provided. The application will fail to start if they're missing.
+</Note>
+
+## Loading configuration
+
+Configuration is loaded once using the singleton pattern:
+
+```go
+var (
+    cfg  *Config
+    once sync.Once
+)
+
+func Load(logg zerolog.Logger) *Config {
+    once.Do(func() {
+        // Load .env file if present
+        if err := godotenv.Load(); err != nil {
+            logg.Info().Msg("no .env file found (using system environment)")
+        }
+        
+        // Parse environment variables
+        c := Config{}
+        if err := env.Parse(&c); err != nil {
+            logg.Fatal().Err(err).Msg("failed to load config")
+        }
+        
+        // Validate configuration
+        // ... validation logic ...
+        
+        cfg = &c
+    })
+    
+    return cfg
+}
+```
+
+<Steps>
+  <Step title="Load .env file">
+    Attempts to load `.env` file from the current directory (optional)
+  </Step>
+  
+  <Step title="Parse environment">
+    Parses environment variables into the Config struct using struct tags
+  </Step>
+  
+  <Step title="Validate values">
+    Runs comprehensive validation on all configuration values
+  </Step>
+  
+  <Step title="Store singleton">
+    Stores the validated config for the application lifetime
+  </Step>
+</Steps>
+
+## Environment variables
+
+### Server configuration
+
+<ParamField path="APP_PORT" type="string" default="8080">
+  HTTP server port. Must be between 1 and 65535.
+  
+  ```bash
+  APP_PORT=8080
+  ```
+</ParamField>
+
+### Database configuration
+
+<ParamField path="DATABASE_URL" type="string" required>
+  PostgreSQL connection string. Must use `postgres://` or `postgresql://` scheme.
+  
+  ```bash
+  DATABASE_URL=postgres://user:pass@localhost:5432/dbname
+  ```
+</ParamField>
+
+<Accordion title="Database URL validation">
+  The URL is validated in `internal/config/config.go:115-132`:
+  
+  ```go
+  func validateDatabaseURL(dbURL string) error {
+      u, err := url.Parse(dbURL)
+      if err != nil {
+          return fmt.Errorf("invalid URL format: %w", err)
+      }
+      
+      // Check scheme
+      if u.Scheme != "postgres" && u.Scheme != "postgresql" {
+          return fmt.Errorf("URL scheme must be 'postgres' or 'postgresql', got '%s'", u.Scheme)
+      }
+      
+      // Check host
+      if u.Host == "" {
+          return fmt.Errorf("URL must contain a host")
+      }
+      
+      // Check database name
+      if u.Path == "" || u.Path == "/" {
+          return fmt.Errorf("URL must contain a database name")
+      }
+      
+      return nil
+  }
+  ```
+</Accordion>
+
+### Redis configuration
+
+<ParamField path="REDIS_ADDR" type="string" required>
+  Redis server address in `host:port` format.
+  
+  ```bash
+  REDIS_ADDR=localhost:6379
+  ```
+</ParamField>
+
+<ParamField path="REDIS_PASSWORD" type="string">
+  Redis password. Optional for development, required for production.
+  
+  ```bash
+  REDIS_PASSWORD=your-secure-password
+  ```
+</ParamField>
+
+<ParamField path="REDIS_DB" type="int" default="0">
+  Redis database index (0-15). Validated to be within valid range.
+  
+  ```bash
+  REDIS_DB=0
+  ```
+</ParamField>
+
+<Warning>
+  Redis database index must be between 0 and 15. Values outside this range will cause startup failure:
+  
+  ```go
+  // internal/config/config.go:72-74
+  if c.RedisDB < 0 || c.RedisDB > 15 {
+      logg.Fatal().Msg("REDIS_DB must be between 0 and 15")
+  }
+  ```
+</Warning>
+
+### Timeout configuration
+
+<ParamField path="HEALTH_CHECK_TIMEOUT" type="duration" default="2s">
+  Maximum time for health check requests to complete.
+  
+  ```bash
+  HEALTH_CHECK_TIMEOUT=2s
+  ```
+</ParamField>
+
+<ParamField path="API_SHUTDOWN_TIMEOUT" type="duration" default="10s">
+  Maximum time to wait for API server graceful shutdown.
+  
+  ```bash
+  API_SHUTDOWN_TIMEOUT=10s
+  ```
+</ParamField>
+
+<ParamField path="WORKER_SHUTDOWN_TIMEOUT" type="duration" default="30s">
+  Maximum time to wait for worker tasks to complete during shutdown.
+  
+  ```bash
+  WORKER_SHUTDOWN_TIMEOUT=30s
+  ```
+  
+  <Tip>
+    Set this higher than your longest-running task duration to avoid force-killing tasks.
+  </Tip>
+</ParamField>
+
+### Logging configuration
+
+<ParamField path="LOG_OUTPUT" type="string" default="stdout">
+  Logging destination: `stdout`, `file`, or `both`.
+  
+  ```bash
+  LOG_OUTPUT=stdout
+  ```
+</ParamField>
+
+<ParamField path="LOG_FILE" type="string">
+  Log file path when using `file` or `both` mode.
+  
+  ```bash
+  LOG_FILE=logs/app.log
+  ```
+  
+  If not specified, defaults to:
+  - API: `logs/api.log`
+  - Worker: `logs/worker.log`
+</ParamField>
+
+## Validation
+
+Configuration is validated comprehensively during startup. All validation happens in `config.Load()`:
+
+<CodeGroup>
+  ```go Required fields
+  // internal/config/config.go:61-63
+  if c.DatabaseURL == "" {
+      logg.Fatal().Msg("DATABASE_URL is required")
+  }
+  ```
+  
+  ```go Port validation
+  // internal/config/config.go:100-113
+  func validatePort(port string) error {
+      if port == "" {
+          return fmt.Errorf("port cannot be empty")
+      }
+      p, err := strconv.Atoi(port)
+      if err != nil {
+          return fmt.Errorf("port must be a number")
+      }
+      if p < 1 || p > 65535 {
+          return fmt.Errorf("port must be between 1 and 65535")
+      }
+      return nil
+  }
+  ```
+  
+  ```go Timeout validation
+  // internal/config/config.go:79-87
+  if c.HealthCheckTimeout <= 0 {
+      logg.Fatal().Msg("HEALTH_CHECK_TIMEOUT must be positive")
+  }
+  if c.APIShutdownTimeout <= 0 {
+      logg.Fatal().Msg("API_SHUTDOWN_TIMEOUT must be positive")
+  }
+  if c.WorkerShutdownTimeout <= 0 {
+      logg.Fatal().Msg("WORKER_SHUTDOWN_TIMEOUT must be positive")
+  }
+  ```
+  
+  ```go Log output validation
+  // internal/config/config.go:90-92
+  if c.LogOutput != "stdout" && c.LogOutput != "file" && c.LogOutput != "both" {
+      logg.Fatal().Msg("LOG_OUTPUT must be one of: stdout, file, both")
+  }
+  ```
+</CodeGroup>
+
+## Fail-fast philosophy
+
+Boiler-Go validates all configuration at startup and exits immediately if anything is wrong:
+
+<Tabs>
+  <Tab title="✅ Good: Clear failure">
+    ```
+    FATA failed to load config error="REDIS_DB must be between 0 and 15"
+    ```
+    
+    Application exits immediately with a clear error message.
+  </Tab>
+  
+  <Tab title="❌ Bad: Silent failure">
+    ```
+    INFO redis connection failed
+    INFO retrying redis connection...
+    INFO redis connection failed
+    ```
+    
+    Application runs with broken configuration, wasting time debugging.
+  </Tab>
+</Tabs>
+
+<Note>
+  This fail-fast approach ensures you catch configuration errors during deployment, not in production.
+</Note>
+
+## Example configurations
+
+### Development
+
+```bash .env
+# Server
+APP_PORT=8080
+
+# Database
+DATABASE_URL=postgres://user:pass@localhost:5432/boiler_dev
+
+# Redis
+REDIS_ADDR=localhost:6379
+REDIS_PASSWORD=
+REDIS_DB=0
+
+# Timeouts
+HEALTH_CHECK_TIMEOUT=2s
+API_SHUTDOWN_TIMEOUT=10s
+WORKER_SHUTDOWN_TIMEOUT=30s
+
+# Logging
+LOG_OUTPUT=stdout
+```
+
+### Production
+
+```bash .env.production
+# Server
+APP_PORT=8080
+
+# Database
+DATABASE_URL=postgres://user:secure-pass@db.example.com:5432/boiler_prod
+
+# Redis
+REDIS_ADDR=redis.example.com:6379
+REDIS_PASSWORD=secure-redis-password
+REDIS_DB=0
+
+# Timeouts
+HEALTH_CHECK_TIMEOUT=5s
+API_SHUTDOWN_TIMEOUT=30s
+WORKER_SHUTDOWN_TIMEOUT=60s
+
+# Logging
+LOG_OUTPUT=both
+LOG_FILE=/var/log/boiler-go/app.log
+```
+
+<Warning>
+  Never commit `.env` files containing production credentials to version control.
+</Warning>
+
+## Usage in code
+
+### Load at startup
+
+<CodeGroup>
+  ```go API server
+  // cmd/api/main.go:53
+  cfg := config.Load(logger.New())
+  ```
+  
+  ```go Worker
+  // cmd/worker/main.go:59
+  cfg := config.Load(logger.New())
+  ```
+</CodeGroup>
+
+### Access configuration values
+
+```go
+func setupServer(cfg *config.Config) {
+    server := &http.Server{
+        Addr:           ":" + cfg.AppPort,
+        ReadTimeout:    10 * time.Second,
+        WriteTimeout:   10 * time.Second,
+    }
+}
+```
+
+## Best practices
+
+1. **Load once**: Configuration is loaded once at startup using `sync.Once`
+2. **Validate early**: All validation happens during `Load()`, before any services start
+3. **Use .env for local dev**: Keep `.env` files for local development, use system environment in production
+4. **Document defaults**: All default values are visible in struct tags
+5. **Type safety**: Use appropriate types (`time.Duration`, `int`) instead of strings
+
+<Tip>
+  Use different `.env` files for different environments:
+  
+  ```bash
+  # Development
+  cp .env.example .env
+  
+  # Production
+  source .env.production
+  ./boiler-go
+  ```
+</Tip>
